@@ -1,6 +1,6 @@
 // ============================================================
-// InnoExtract.js - Inno Setup 5.6.2 data extractor
-// Extracts game data files from GOG Heroes 3 installer (EXE+BIN)
+// InnoExtract.js - Inno Setup data extractor for GOG installers
+// Supports v5.5.0+ (LZMA2) and v5.6.2 (zlib), single-file & EXE+BIN
 // ============================================================
 
 const InnoExtract = (function () {
@@ -9,17 +9,13 @@ const InnoExtract = (function () {
     // "rDlPtS\xcd\xe6\xd7{\x0b*"
     const LOADER_MAGIC = [0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0xCD, 0xE6, 0xD7, 0x7B, 0x0B, 0x2A];
 
-    // Target data files to extract (LOD archives only)
-    const TARGET_FILES = [
-        'Data\\H3bitmap.lod',
-        'Data\\H3sprite.lod',
-        'Data\\H3ab_bmp.lod',
-        'Data\\H3ab_spr.lod',
-        'Data\\Heroes3.snd',
-        'Data\\H3ab_ahd.snd',
-        'Data\\H3ab_ahd.vid',
-        'Data\\VIDEO.VID'
-    ];
+    // Extensions to search for (case-insensitive)
+    const TARGET_EXTS = ['.lod', '.snd', '.vid'];
+
+    function isTargetFile(name) {
+        const lower = name.toLowerCase();
+        return TARGET_EXTS.some(ext => lower.endsWith(ext));
+    }
 
     // ---- Low-level helpers ----
 
@@ -98,20 +94,15 @@ const InnoExtract = (function () {
         });
     }
 
-    // ---- LZMA decompression (uses global LZMA from lzma_worker.js) ----
+    // ---- LZMA decompression for block headers (uses global LZMA) ----
 
     function lzmaDecompress(stripped) {
-        // Build LZMA "alone" format: props(5) + size(8) + data
-        // First 5 bytes of stripped = LZMA properties
-        // Use 0xFFFFFFFFFFFFFFFF for unknown uncompressed size
         const lzmaInput = new Array(5 + 8 + stripped.length - 5);
         for (let i = 0; i < 5; i++) lzmaInput[i] = stripped[i];
         for (let i = 0; i < 8; i++) lzmaInput[5 + i] = 0xFF;
         for (let i = 5; i < stripped.length; i++) lzmaInput[8 + i] = stripped[i];
 
         const result = LZMA.decompress(lzmaInput);
-
-        // result is a plain array of signed bytes (or binary-detected raw array)
         if (result instanceof Uint8Array) return result;
         const out = new Uint8Array(result.length);
         for (let i = 0; i < result.length; i++) out[i] = result[i] & 0xFF;
@@ -128,12 +119,13 @@ const InnoExtract = (function () {
             const headerOffset = readUint32LE(exeData, loaderOff + 32);
             if (headerOffset >= exeData.length) return false;
 
-            let vEnd = headerOffset;
-            while (vEnd < exeData.length && exeData[vEnd] !== 0) vEnd++;
-            const ver = '';
-            const bytes = exeData.subarray(headerOffset, vEnd);
+            // Version is a fixed 64-byte char[64] field
             let versionStr = '';
-            for (let i = 0; i < bytes.length; i++) versionStr += String.fromCharCode(bytes[i]);
+            for (let i = 0; i < 64; i++) {
+                const c = exeData[headerOffset + i];
+                if (c === 0) break;
+                versionStr += String.fromCharCode(c);
+            }
 
             return versionStr.indexOf('Inno Setup') >= 0;
         } catch (e) {
@@ -142,42 +134,33 @@ const InnoExtract = (function () {
     }
 
     function parseExe(exeData) {
-        // Find loader magic in PE resources
         const loaderOff = findBytes(exeData, LOADER_MAGIC, 0);
         if (loaderOff < 0) throw new Error('Kein Inno Setup Installer erkannt');
 
-        // Loader offset table (for >= 5.1.5):
-        // magic(12) + revision(4) + skip(4) + exe_offset(4) + exe_uncompressed(4)
-        // + exe_crc(4) + header_offset(4) + data_offset(4) + table_crc(4)
         const headerOffset = readUint32LE(exeData, loaderOff + 32);
+        const dataOffset = readUint32LE(exeData, loaderOff + 36);
 
-        // Read version string
-        let vEnd = headerOffset;
-        while (vEnd < exeData.length && exeData[vEnd] !== 0) vEnd++;
+        // Version: fixed 64-byte char[64] at headerOffset
         let versionStr = '';
-        for (let i = headerOffset; i < vEnd; i++) versionStr += String.fromCharCode(exeData[i]);
-
+        for (let i = 0; i < 64; i++) {
+            const c = exeData[headerOffset + i];
+            if (c === 0) break;
+            versionStr += String.fromCharCode(c);
+        }
         if (versionStr.indexOf('Inno Setup') < 0) {
             throw new Error('Kein Inno Setup Installer');
         }
 
-        // Skip version string + null byte + padding zeros to find block1
-        let block1Start = vEnd + 1;
-        while (block1Start < exeData.length && exeData[block1Start] === 0) block1Start++;
+        // Block1 starts immediately after the 64-byte version field
+        const block1Start = headerOffset + 64;
 
-        // Block1: CRC32(4) + stored_size(4) + compressed(1)
+        // Block header: CRC32(4) + stored_size(4) + compressed(1)
         const block1StoredSize = readUint32LE(exeData, block1Start + 4);
         const block1Compressed = exeData[block1Start + 8];
 
         const block1Raw = exeData.subarray(block1Start + 9, block1Start + 9 + block1StoredSize);
         const block1Stripped = stripBlockCrc(block1Raw);
-
-        let block1;
-        if (block1Compressed) {
-            block1 = lzmaDecompress(block1Stripped);
-        } else {
-            block1 = block1Stripped;
-        }
+        let block1 = block1Compressed ? lzmaDecompress(block1Stripped) : block1Stripped;
 
         // Block2: immediately after block1
         const block2Start = block1Start + 9 + block1StoredSize;
@@ -186,15 +169,11 @@ const InnoExtract = (function () {
 
         const block2Raw = exeData.subarray(block2Start + 9, block2Start + 9 + block2StoredSize);
         let block2 = stripBlockCrc(block2Raw);
-
-        if (block2Compressed) {
-            block2 = lzmaDecompress(block2);
-        }
+        if (block2Compressed) block2 = lzmaDecompress(block2);
 
         // Parse data entries from block2 (74 bytes each)
         const numEntries = Math.floor(block2.length / 74);
         const dataEntries = new Array(numEntries);
-
         for (let i = 0; i < numEntries; i++) {
             const off = i * 74;
             dataEntries[i] = {
@@ -208,13 +187,19 @@ const InnoExtract = (function () {
             };
         }
 
-        // Scan block1 for before_install scripts to find target files
-        const fileMap = scanTargetFiles(block1);
+        // Try before_install scanning first (GOG Galaxy v5.6.2 format)
+        let fileMap = scanBeforeInstallFiles(block1);
 
-        return { versionStr, dataEntries, fileMap };
+        // If no results, try destination string scanning (v5.5.0 format)
+        if (fileMap.size === 0) {
+            fileMap = scanDestinationFiles(block1);
+        }
+
+        return { versionStr, dataEntries, fileMap, dataOffset };
     }
 
-    function scanTargetFiles(block1) {
+    // Scan for before_install('hash','path',chunkCount) scripts (v5.6.2 GOG Galaxy)
+    function scanBeforeInstallFiles(block1) {
         const biMarker = encodeUTF16LE("before_install('");
         const fileMap = new Map();
         let pos = 0;
@@ -223,7 +208,6 @@ const InnoExtract = (function () {
             const idx = findBytes(block1, biMarker, pos);
             if (idx < 0) break;
 
-            // String length prefix is 4 bytes before the string content
             const strLen = readUint32LE(block1, idx - 4);
             if (strLen > 1000 || idx + strLen > block1.length) {
                 pos = idx + biMarker.length;
@@ -231,22 +215,17 @@ const InnoExtract = (function () {
             }
 
             const text = decodeUTF16LE(block1, idx, strLen);
-
-            // before_install('hash', 'path', count)
             const parts = text.split("'");
             if (parts.length >= 4) {
                 const path = parts[3];
                 const countStr = text.slice(text.lastIndexOf(',') + 1).trim().replace(')', '');
                 const count = parseInt(countStr, 10) || 1;
 
-                // location field: 20 bytes after string end
-                // (min_version: uint32+uint32+uint16=10, only_below_version: same=10)
                 const strEnd = idx + strLen;
                 const location = readUint32LE(block1, strEnd + 20);
 
-                if (TARGET_FILES.indexOf(path) >= 0) {
-                    const name = path.split('\\').pop();
-                    fileMap.set(name, { path, location, chunkCount: count });
+                if (isTargetFile(path)) {
+                    fileMap.set(path, { path, location, chunkCount: count });
                 }
             }
 
@@ -256,27 +235,120 @@ const InnoExtract = (function () {
         return fileMap;
     }
 
-    // ---- File extraction from BIN ----
+    // Skip a UTF-16LE length-prefixed string at position pos, return new position
+    function skipString(data, pos) {
+        if (pos + 4 > data.length) return data.length;
+        const len = readUint32LE(data, pos);
+        return pos + 4 + len;
+    }
 
-    async function extractFile(binFile, dataEntries, fileInfo, onProgress) {
+    // Read a UTF-16LE length-prefixed string at position pos
+    function readString(data, pos) {
+        if (pos + 4 > data.length) return { str: '', end: data.length };
+        const len = readUint32LE(data, pos);
+        if (pos + 4 + len > data.length) return { str: '', end: data.length };
+        const str = decodeUTF16LE(data, pos + 4, len);
+        return { str, end: pos + 4 + len };
+    }
+
+    // Scan for destination strings containing target extensions (v5.5.0)
+    // File entry strings: source, dest, install_font_name, strong_assembly_name,
+    //   components, tasks, languages, check, after_install, before_install
+    // After 10 strings: 20 bytes version data, then location(u32)
+    function scanDestinationFiles(block1) {
+        const fileMap = new Map();
+        // Search for target extensions in UTF-16LE
+        for (const ext of TARGET_EXTS) {
+            const extBytes = encodeUTF16LE(ext);
+            // Also search uppercase variant
+            const extBytesUpper = encodeUTF16LE(ext.toUpperCase());
+            const patterns = [extBytes, extBytesUpper];
+
+            for (const pattern of patterns) {
+                let searchPos = 0;
+                while (searchPos < block1.length) {
+                    const idx = findBytes(block1, pattern, searchPos);
+                    if (idx < 0) break;
+
+                    // Find the string that contains this match by reading backward to the length prefix
+                    // The string content starts at some (len_pos + 4), and idx is within it
+                    // Try to find the string start by looking for a plausible length prefix
+                    let found = false;
+                    for (let backtrack = idx - 2; backtrack >= Math.max(0, idx - 2000); backtrack -= 2) {
+                        if (backtrack < 4) break;
+                        const maybeLen = readUint32LE(block1, backtrack - 4);
+                        // Check if this length prefix points to the end of a string that includes our match
+                        if (maybeLen > 0 && maybeLen < 2000 && maybeLen % 2 === 0) {
+                            const strStart = backtrack;
+                            const strEnd = strStart + maybeLen;
+                            if (idx >= strStart && idx + pattern.length <= strEnd) {
+                                // This is the destination string. Read it.
+                                const destStr = decodeUTF16LE(block1, strStart, maybeLen);
+                                if (isTargetFile(destStr)) {
+                                    // Now we need to find the location field.
+                                    // This is the 2nd string (destination). We need to skip strings 3-10 (8 more)
+                                    // then 20 bytes of version data, then read location u32.
+                                    let p = strStart + maybeLen;  // after destination string
+                                    for (let s = 0; s < 8; s++) {
+                                        p = skipString(block1, p);  // skip strings 3-10
+                                    }
+                                    p += 20; // skip version data
+                                    if (p + 4 <= block1.length) {
+                                        const location = readUint32LE(block1, p);
+                                        if (!fileMap.has(destStr)) {
+                                            fileMap.set(destStr, { path: destStr, location, chunkCount: 1 });
+                                        }
+                                    }
+                                    found = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    searchPos = idx + pattern.length;
+                }
+            }
+        }
+        return fileMap;
+    }
+
+    // ---- Data chunk decompression ----
+
+    function decompressChunk(zlibData, expectedSize) {
+        // Try zlib (raw deflate) first
+        try {
+            return pako.inflate(zlibData);
+        } catch (e) {
+            // Fall back to LZMA2 (v5.5.0)
+            // zlibData[0] = dict property byte, rest = LZMA2 stream
+            if (typeof LZMA2Decode !== 'undefined') {
+                return LZMA2Decode.decompress(zlibData, expectedSize);
+            }
+            throw new Error('Dekomprimierung fehlgeschlagen: ' + e.message);
+        }
+    }
+
+    // ---- File extraction ----
+
+    async function extractFile(sourceFile, dataOffset, dataEntries, fileInfo, onProgress) {
         const { location, chunkCount } = fileInfo;
         const chunks = [];
         let totalSize = 0;
 
         for (let i = 0; i < chunkCount; i++) {
             const entry = dataEntries[location + i];
+            const chunkPos = dataOffset + entry.chunkOffset;
 
-            // Read zlb header (4 bytes magic) + zlib data (chunkSize bytes)
-            const raw = await readFileSlice(binFile, entry.chunkOffset, 4 + entry.chunkSize);
+            // Read zlb header (4 bytes magic) + compressed data (chunkSize bytes)
+            const raw = await readFileSlice(sourceFile, chunkPos, 4 + entry.chunkSize);
 
-            // Verify zlb magic
             if (raw[0] !== 0x7A || raw[1] !== 0x6C || raw[2] !== 0x62 || raw[3] !== 0x1A) {
-                throw new Error('Ungültige Chunk-Daten bei Offset ' + entry.chunkOffset);
+                throw new Error('Ungültige Chunk-Daten bei Offset ' + chunkPos);
             }
 
-            // Decompress zlib data with pako
-            const zlibData = raw.subarray(4);
-            const decompressed = pako.inflate(zlibData);
+            const compData = raw.subarray(4);
+            const decompressed = decompressChunk(compData, entry.fileSize);
 
             chunks.push(decompressed);
             totalSize += decompressed.length;
@@ -284,7 +356,6 @@ const InnoExtract = (function () {
             if (onProgress) onProgress(i + 1, chunkCount);
         }
 
-        // Assemble
         const result = new Uint8Array(totalSize);
         let off = 0;
         for (const chunk of chunks) {
@@ -294,11 +365,10 @@ const InnoExtract = (function () {
         return result;
     }
 
-    // ---- Public API ----
     return {
         isHeroes3Installer,
         parseExe,
         extractFile,
-        TARGET_FILES
+        TARGET_EXTS
     };
 })();

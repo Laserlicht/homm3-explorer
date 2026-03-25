@@ -1510,53 +1510,79 @@
                 return;
             }
 
-            hideLoading();
-
-            // Ask for BIN file
-            const binFile = await askForBinFile(file.name);
-            if (!binFile) return;
-
             showLoading('Installer wird analysiert...', -1);
-            const { dataEntries, fileMap } = InnoExtract.parseExe(exeData);
+            const { dataEntries, fileMap, dataOffset } = InnoExtract.parseExe(exeData);
 
-            // Filter to LOD files
-            const lodFiles = [];
-            for (const [name, info] of fileMap) {
-                if (name.toLowerCase().endsWith('.lod')) {
-                    lodFiles.push({ name, info });
-                }
+            // Determine source file: self-contained EXE (dataOffset > 0) or external BIN
+            let sourceFile;
+            let effectiveDataOffset;
+
+            if (dataOffset > 0) {
+                // Self-contained: data is inside the EXE
+                sourceFile = file;
+                effectiveDataOffset = dataOffset;
+            } else {
+                // External BIN needed
+                hideLoading();
+                const binFile = await askForBinFile(file.name);
+                if (!binFile) return;
+                sourceFile = binFile;
+                effectiveDataOffset = 0;
+                showLoading('Installer wird analysiert...', -1);
             }
 
-            if (lodFiles.length === 0) {
+            // Collect all target files (LOD, SND, VID)
+            const targetFiles = [];
+            for (const [key, info] of fileMap) {
+                // Derive display name from path: strip {app}\ prefix, use path components
+                const path = info.path || key;
+                const basename = path.split('\\').pop();
+                // Include parent dir if there are duplicate basenames
+                const parts = path.replace(/^\{app\}\\/, '').split('\\');
+                const displayName = parts.length > 2
+                    ? parts[parts.length - 3] + '/' + basename  // e.g. "Warlords of the Wasteland/xBitmap.lod"
+                    : basename;
+                targetFiles.push({ name: displayName, info });
+            }
+
+            if (targetFiles.length === 0) {
                 hideLoading();
-                toast('Keine LOD-Dateien im Installer gefunden.', 'error');
+                toast('Keine LOD/SND/VID-Dateien im Installer gefunden.', 'error');
                 return;
             }
 
-            // Extract LOD files
+            // Extract files
             let extracted = 0;
-            const totalChunks = lodFiles.reduce((s, f) => s + f.info.chunkCount, 0);
+            const totalChunks = targetFiles.reduce((s, f) => s + f.info.chunkCount, 0);
             let doneChunks = 0;
 
-            for (const { name, info } of lodFiles) {
+            for (const { name, info } of targetFiles) {
                 showLoading(`Extrahiere ${name}...`, doneChunks / totalChunks);
 
-                const data = await InnoExtract.extractFile(binFile, dataEntries, info, (done, total) => {
+                const data = await InnoExtract.extractFile(sourceFile, effectiveDataOffset, dataEntries, info, (done, total) => {
                     showLoading(`Extrahiere ${name}... (${done}/${total})`, (doneChunks + done) / totalChunks);
                 });
 
                 doneChunks += info.chunkCount;
 
-                // Parse as LOD archive
+                // Parse based on extension
+                const ext = name.split('.').pop().toLowerCase();
                 showLoading(`Parse ${name}...`, doneChunks / totalChunks);
-                const archive = await H3.LodFile.open(data);
-                const displayName = name + ' (GOG)';
-                state.archives.set(displayName, { archive, type: 'lod' });
+
+                if (ext === 'lod') {
+                    const archive = await H3.LodFile.open(data);
+                    const displayName = name + ' (GOG)';
+                    state.archives.set(displayName, { archive, type: 'lod' });
+                } else {
+                    // SND/VID: store as raw binary
+                    const displayName = name + ' (GOG)';
+                    state.standaloneFiles.set(displayName, { data, type: ext });
+                }
                 extracted++;
             }
 
             // Auto-open first bitmap LOD
-            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('h3bitmap'));
+            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('bitmap'));
             if (bitmapKey) {
                 const entry = state.archives.get(bitmapKey);
                 state.archive = entry.archive;
@@ -1573,7 +1599,7 @@
             buildFileList();
             hideLoading();
             setMode('explorer');
-            toast(`${extracted} LOD-Archive aus GOG-Installer extrahiert!`, 'success');
+            toast(`${extracted} Dateien aus GOG-Installer extrahiert!`, 'success');
 
         } catch (err) {
             hideLoading();
