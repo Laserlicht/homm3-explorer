@@ -1147,6 +1147,98 @@ class PakFile {
 }
 
 // ============================================================
+// SND File Parser
+// ============================================================
+class SndFile {
+    constructor() {
+        this.files = [];
+        this._buffer = null;
+    }
+
+    static async open(data) {
+        const snd = new SndFile();
+        await snd._parse(data);
+        return snd;
+    }
+
+    async _parse(data) {
+        this._buffer = data;
+        const r = new DataView2(data);
+        const totalFiles = r.readUint32LE();
+        this.files = [];
+        for (let i = 0; i < totalFiles; i++) {
+            const name = r.readString(40);
+            const offset = r.readUint32LE();
+            const size = r.readUint32LE();
+            this.files.push({ filename: name.toLowerCase(), offset, size });
+        }
+    }
+
+    getFilelist() {
+        return this.files.map(f => f.filename);
+    }
+
+    async getFile(selectedFilename) {
+        selectedFilename = selectedFilename.toLowerCase();
+        for (const { filename, offset, size } of this.files) {
+            if (selectedFilename !== filename) continue;
+            return this._buffer.slice(offset, offset + size);
+        }
+        console.warn('file not found:', selectedFilename);
+        return null;
+    }
+}
+
+// ============================================================
+// VID File Parser
+// ============================================================
+class VidFile {
+    constructor() {
+        this.files = [];
+        this._buffer = null;
+    }
+
+    static async open(data) {
+        const vid = new VidFile();
+        await vid._parse(data);
+        return vid;
+    }
+
+    async _parse(data) {
+        this._buffer = data;
+        const r = new DataView2(data);
+        const totalFiles = r.readUint32LE();
+        const entries = [];
+        for (let i = 0; i < totalFiles; i++) {
+            const name = r.readString(40);
+            const begin = r.readUint32LE();
+            entries.push({ filename: name.toLowerCase(), begin, end: 0 });
+        }
+        for (let i = 0; i < entries.length - 1; i++) {
+            entries[i].end = entries[i + 1].begin;
+        }
+        if (entries.length > 0) {
+            entries[entries.length - 1].end = data.length;
+        }
+        this.files = entries;
+    }
+
+    getFilelist() {
+        return this.files.map(f => f.filename);
+    }
+
+    async getFile(selectedFilename) {
+        selectedFilename = selectedFilename.toLowerCase();
+        for (const { filename, begin, end } of this.files) {
+            if (selectedFilename !== filename) continue;
+            return this._buffer.slice(begin, end);
+        }
+        console.warn('file not found:', selectedFilename);
+        return null;
+    }
+}
+
+// ============================================================
 // File type detection helpers
 // ============================================================
 function getFileExtension(filename) {
@@ -1159,7 +1251,9 @@ function getFileCategory(filename) {
     const ext = getFileExtension(filename);
     switch (ext) {
         case 'pcx': return 'image';
-        case 'def': return 'animation';
+        case 'def':
+        case 'd32':
+            return 'animation';
         case 'txt':
         case 'xls':
         case 'csv':
@@ -1182,6 +1276,8 @@ window.H3 = {
     PCX,
     DefFile,
     PakFile,
+    SndFile,
+    VidFile,
     getFileExtension,
     getFileCategory,
     DataView2,

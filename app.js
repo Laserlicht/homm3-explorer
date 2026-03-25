@@ -119,7 +119,7 @@
     function getFileIcon(ext) {
         switch (ext) {
             case 'pcx': return '🖼️';
-            case 'def': return '🎬';
+            case 'def': case 'd32': return '🎬';
             case 'txt': case 'xls': case 'csv': return '📄';
             case 'wav': case 'snd': return '🔊';
             case 'msk': return '🎭';
@@ -172,7 +172,7 @@
         state.archiveName = name;
         state.archiveType = info.type;
         state.thumbCache.clear();
-        if (info.type === 'lod') buildFileList();
+        if (info.type === 'lod' || info.type === 'snd' || info.type === 'vid') buildFileList();
         else if (info.type === 'pak') buildPakFileList();
     }
 
@@ -296,6 +296,48 @@
                     } else if (ext === 'exe') {
                         await processExeFile(file);
                         continue;
+                    } else if (ext === 'pac') {
+                        showLoading('Parsing PAC archive...');
+                        state.archive = await H3.LodFile.open(data);
+                        state.archiveName = file.name;
+                        state.archiveType = 'lod';
+                        state.archives.set(file.name, { archive: state.archive, type: 'lod' });
+                        updateArchiveSelector();
+                        buildFileList();
+                        updateStandaloneUI();
+                        setMode('explorer');
+                        toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
+                    } else if (ext === 'snd') {
+                        showLoading('Parsing SND archive...');
+                        state.archive = await H3.SndFile.open(data);
+                        state.archiveName = file.name;
+                        state.archiveType = 'snd';
+                        state.archives.set(file.name, { archive: state.archive, type: 'snd' });
+                        updateArchiveSelector();
+                        buildFileList();
+                        updateStandaloneUI();
+                        setMode('explorer');
+                        toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
+                    } else if (ext === 'vid') {
+                        showLoading('Parsing VID archive...');
+                        state.archive = await H3.VidFile.open(data);
+                        state.archiveName = file.name;
+                        state.archiveType = 'vid';
+                        state.archives.set(file.name, { archive: state.archive, type: 'vid' });
+                        updateArchiveSelector();
+                        buildFileList();
+                        updateStandaloneUI();
+                        setMode('explorer');
+                        toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
+                    } else if (ext === 'd32') {
+                        showLoading('Parsing D32 file...');
+                        const def = H3.DefFile.open(data);
+                        state.standaloneFiles.set(file.name, { data, type: 'def', parsed: def });
+                        if (!state.archive) {
+                            buildStandaloneFileList();
+                            setMode('defviewer');
+                        }
+                        toast(`Loaded D32: ${file.name}`, 'success');
                     }
                 } catch (err) {
                     console.error(err);
@@ -543,9 +585,23 @@
                     showDefPreview(preview, def, file.name);
                 } else if (ext === 'txt' || ext === 'xls' || ext === 'csv') {
                     showTextPreview(preview, data, file.name);
+                } else if (ext === 'wav' || (ext === '' && isWavData(data))) {
+                    showAudioPreview(preview, data, file.name);
                 } else {
                     showBinaryPreview(preview, data, file.name);
                 }
+            } else if (state.archiveType === 'snd') {
+                showLoading('Loading file...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { showPreviewError(preview, 'File not found'); return; }
+                showAudioPreview(preview, data, file.name);
+            } else if (state.archiveType === 'vid') {
+                showLoading('Loading file...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { showPreviewError(preview, 'File not found'); return; }
+                showBinaryPreview(preview, data, file.name);
             } else if (state.archiveType === 'pak') {
                 if (file.imageName && file.sheet) {
                     showLoading('Loading image...');
@@ -811,6 +867,55 @@
         `;
     }
 
+    function isWavData(data) {
+        return data.length >= 12 &&
+            data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46 &&
+            data[8] === 0x57 && data[9] === 0x41 && data[10] === 0x56 && data[11] === 0x45;
+    }
+
+    function showAudioPreview(container, data, filename) {
+        const isWav = isWavData(data);
+        const mimeType = isWav ? 'audio/wav' : 'application/octet-stream';
+        const blob = new Blob([data], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${formatSize(data.length)}</span>
+                        <span>${isWav ? 'WAV Audio' : 'Audio'}</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button id="audio-export-btn" title="Export file">💾</button>
+                    </div>
+                </div>
+                <div class="preview-body" style="align-items:center; justify-content:center;">
+                    <div style="text-align:center;">
+                        <div style="font-size:48px; margin-bottom:16px;">🔊</div>
+                        <audio controls src="${url}" style="width:100%; max-width:400px;"></audio>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const exportBtn = container.querySelector('#audio-export-btn');
+        if (exportBtn) {
+            const exportName = isWav && !filename.includes('.') ? filename + '.wav' : filename;
+            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), exportName));
+        }
+
+        // Clean up blob URL when preview changes
+        const obs = new MutationObserver(() => {
+            if (!container.querySelector('audio')) {
+                URL.revokeObjectURL(url);
+                obs.disconnect();
+            }
+        });
+        obs.observe(container, { childList: true, subtree: true });
+    }
+
     // ---- DEF Animation Viewer ----
     function clearThumbAnimTimers() {
         for (const t of state.thumbAnimTimers) clearInterval(t);
@@ -831,9 +936,9 @@
             }
         }
 
-        // Standalone
+        // Standalone (skip if already in archive file list)
         for (const [name, info] of state.standaloneFiles) {
-            if (info.type === 'def') {
+            if (info.type === 'def' && !defs.some(d => d.name === name)) {
                 defs.push({ name, ext: 'def', standalone: true });
             }
         }
@@ -1378,20 +1483,20 @@
         overlay.innerHTML = `
             <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); padding:28px 32px; max-width:520px; width:90%; box-shadow:var(--shadow-lg); text-align:center;">
                 <div style="font-size:40px; margin-bottom:12px;">🏰</div>
-                <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 Demo laden</h2>
+                <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">Load HoMM3 Demo</h2>
                 <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
-                    Die Demo muss manuell heruntergeladen werden (Browser-Sicherheit verhindert direkten Download von archive.org).<br>
-                    Danach die <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code>-Datei hier laden — alles wird lokal im Browser verarbeitet.
+                    The demo must be downloaded manually (browser security prevents direct download from archive.org).<br>
+                    Then load the <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code> file here — everything is processed locally in the browser.
                 </p>
                 <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
                     <a href="${DEMO_URL}" download="heroes3-demo.run" target="_blank" rel="noopener" class="welcome-btn secondary" style="text-decoration:none; justify-content:center; width:100%;">
-                        ⬇️&nbsp; 1. Demo herunterladen (~100 MB)
+                        ⬇️&nbsp; 1. Download demo (~100 MB)
                     </a>
                     <button id="demo-load-run" class="welcome-btn primary" style="width:100%; justify-content:center;">
-                        📂&nbsp; 2. Heruntergeladene .run-Datei öffnen
+                        📂&nbsp; 2. Open downloaded .run file
                     </button>
                     <button id="demo-cancel" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
-                        Abbrechen
+                        Cancel
                     </button>
                 </div>
             </div>
@@ -1499,18 +1604,18 @@
 
     // ---- GOG EXE Installer processing ----
     async function processExeFile(file) {
-        showLoading('EXE wird gelesen...', 0);
+        showLoading('Reading EXE...', 0);
 
         try {
             const exeData = new Uint8Array(await file.arrayBuffer());
 
             if (!InnoExtract.isHeroes3Installer(exeData)) {
                 hideLoading();
-                toast('Kein HoMM3 GOG-Installer erkannt.', 'error');
+                toast('Not a HoMM3 GOG installer.', 'error');
                 return;
             }
 
-            showLoading('Installer wird analysiert...', -1);
+            showLoading('Analyzing installer...', -1);
             const { dataEntries, fileMap, dataOffset } = InnoExtract.parseExe(exeData);
 
             // Determine source file: self-contained EXE (dataOffset > 0) or external BIN
@@ -1528,7 +1633,7 @@
                 if (!binFile) return;
                 sourceFile = binFile;
                 effectiveDataOffset = 0;
-                showLoading('Installer wird analysiert...', -1);
+                showLoading('Analyzing installer...', -1);
             }
 
             // Collect all target files (LOD, SND, VID)
@@ -1547,7 +1652,7 @@
 
             if (targetFiles.length === 0) {
                 hideLoading();
-                toast('Keine LOD/SND/VID-Dateien im Installer gefunden.', 'error');
+                toast('No LOD/SND/VID files found in installer.', 'error');
                 return;
             }
 
@@ -1557,24 +1662,31 @@
             let doneChunks = 0;
 
             for (const { name, info } of targetFiles) {
-                showLoading(`Extrahiere ${name}...`, doneChunks / totalChunks);
+                showLoading(`Extracting ${name}...`, doneChunks / totalChunks);
 
                 const data = await InnoExtract.extractFile(sourceFile, effectiveDataOffset, dataEntries, info, (done, total) => {
-                    showLoading(`Extrahiere ${name}... (${done}/${total})`, (doneChunks + done) / totalChunks);
+                    showLoading(`Extracting ${name}... (${done}/${total})`, (doneChunks + done) / totalChunks);
                 });
 
                 doneChunks += info.chunkCount;
 
                 // Parse based on extension
                 const ext = name.split('.').pop().toLowerCase();
-                showLoading(`Parse ${name}...`, doneChunks / totalChunks);
+                showLoading(`Parsing ${name}...`, doneChunks / totalChunks);
 
                 if (ext === 'lod') {
                     const archive = await H3.LodFile.open(data);
                     const displayName = name + ' (GOG)';
                     state.archives.set(displayName, { archive, type: 'lod' });
+                } else if (ext === 'snd') {
+                    const archive = await H3.SndFile.open(data);
+                    const displayName = name + ' (GOG)';
+                    state.archives.set(displayName, { archive, type: 'snd' });
+                } else if (ext === 'vid') {
+                    const archive = await H3.VidFile.open(data);
+                    const displayName = name + ' (GOG)';
+                    state.archives.set(displayName, { archive, type: 'vid' });
                 } else {
-                    // SND/VID: store as raw binary
                     const displayName = name + ' (GOG)';
                     state.standaloneFiles.set(displayName, { data, type: ext });
                 }
@@ -1599,12 +1711,12 @@
             buildFileList();
             hideLoading();
             setMode('explorer');
-            toast(`${extracted} Dateien aus GOG-Installer extrahiert!`, 'success');
+            toast(`Extracted ${extracted} files from GOG installer!`, 'success');
 
         } catch (err) {
             hideLoading();
             console.error(err);
-            toast('Fehler beim Extrahieren: ' + err.message, 'error');
+            toast('Extraction error: ' + err.message, 'error');
         }
     }
 
@@ -1621,17 +1733,17 @@
             overlay.innerHTML = `
                 <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); padding:28px 32px; max-width:520px; width:90%; box-shadow:var(--shadow-lg); text-align:center;">
                     <div style="font-size:40px; margin-bottom:12px;">⚔️</div>
-                    <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 GOG-Installer erkannt!</h2>
+                    <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 GOG installer detected!</h2>
                     <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
-                        Zum Extrahieren der Spieldaten wird die zugehörige BIN-Datei benötigt.<br>
-                        Bitte wähle <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">${escapeHtml(expectedBin)}</code> aus demselben Verzeichnis.
+                        The associated BIN file is needed to extract the game data.<br>
+                        Please select <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">${escapeHtml(expectedBin)}</code> from the same directory.
                     </p>
                     <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
                         <button id="bin-select-btn" class="welcome-btn primary" style="width:100%; justify-content:center;">
-                            📂&nbsp; BIN-Datei auswählen
+                            📂&nbsp; Select BIN file
                         </button>
                         <button id="bin-cancel" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
-                            Abbrechen
+                            Cancel
                         </button>
                     </div>
                 </div>

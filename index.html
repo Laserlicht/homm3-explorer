@@ -35,7 +35,7 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Demo
                 </button>
-                <input type="file" id="file-input" accept=".lod,.pak,.def,.pcx,.run,.exe" multiple style="display:none">
+                <input type="file" id="file-input" accept=".lod,.pak,.pac,.snd,.vid,.def,.d32,.pcx,.run,.exe" multiple style="display:none">
                 <input type="file" id="bin-input" accept=".bin" style="display:none">
             </div>
         </header>
@@ -48,7 +48,7 @@
                     <div class="welcome-icon">🏰</div>
                     <h1>Heroes of Might & Magic III</h1>
                     <h2>File Explorer</h2>
-                    <p class="welcome-desc">Load LOD, PAK, DEF, or PCX files from your disk — or download the free demo files to get started.</p>
+                    <p class="welcome-desc">Load LOD, PAK, SND, VID, DEF, or PCX files from your disk — or download the free demo files to get started.</p>
                     <div class="welcome-actions">
                         <button id="welcome-open" class="welcome-btn primary">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -62,10 +62,15 @@
                     <div class="welcome-formats">
                         <span class="format-badge">.LOD</span>
                         <span class="format-badge">.PAK</span>
+                        <span class="format-badge">.SND</span>
+                        <span class="format-badge">.VID</span>
                         <span class="format-badge">.DEF</span>
                         <span class="format-badge">.PCX</span>
-                        <span class="format-badge">.EXE</span>
+                        <span class="format-badge">.PAC</span>
+                        <span class="format-badge">.D32</span>
+                        <span class="format-badge format-badge-exe">.EXE</span>
                     </div>
+                    <p class="welcome-hint">EXE support is for GOG installers of HoMM3 Complete and Chronicles only.</p>
                 </div>
             </div>
 

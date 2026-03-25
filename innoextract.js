@@ -135,7 +135,7 @@ const InnoExtract = (function () {
 
     function parseExe(exeData) {
         const loaderOff = findBytes(exeData, LOADER_MAGIC, 0);
-        if (loaderOff < 0) throw new Error('Kein Inno Setup Installer erkannt');
+        if (loaderOff < 0) throw new Error('Not an Inno Setup installer');
 
         const headerOffset = readUint32LE(exeData, loaderOff + 32);
         const dataOffset = readUint32LE(exeData, loaderOff + 36);
@@ -148,7 +148,7 @@ const InnoExtract = (function () {
             versionStr += String.fromCharCode(c);
         }
         if (versionStr.indexOf('Inno Setup') < 0) {
-            throw new Error('Kein Inno Setup Installer');
+            throw new Error('Not an Inno Setup installer');
         }
 
         // Block1 starts immediately after the 64-byte version field
@@ -325,7 +325,7 @@ const InnoExtract = (function () {
             if (typeof LZMA2Decode !== 'undefined') {
                 return LZMA2Decode.decompress(zlibData, expectedSize);
             }
-            throw new Error('Dekomprimierung fehlgeschlagen: ' + e.message);
+            throw new Error('Decompression failed: ' + e.message);
         }
     }
 
@@ -344,7 +344,7 @@ const InnoExtract = (function () {
             const raw = await readFileSlice(sourceFile, chunkPos, 4 + entry.chunkSize);
 
             if (raw[0] !== 0x7A || raw[1] !== 0x6C || raw[2] !== 0x62 || raw[3] !== 0x1A) {
-                throw new Error('Ungültige Chunk-Daten bei Offset ' + chunkPos);
+                throw new Error('Invalid chunk data at offset ' + chunkPos);
             }
 
             const compData = raw.subarray(4);

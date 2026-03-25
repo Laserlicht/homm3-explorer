@@ -301,6 +301,18 @@ body {
     color: var(--text-secondary);
 }
 
+.format-badge-exe {
+    background: rgba(59, 130, 246, 0.15);
+    border-color: rgba(59, 130, 246, 0.3);
+    color: #60a5fa;
+}
+
+.welcome-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
 /* ---- Explorer Layout ---- */
 .explorer-layout {
     display: flex;
