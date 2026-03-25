@@ -1,0 +1,1810 @@
+// ============================================================
+// HoMM3 Explorer - Main Application
+// ============================================================
+
+(() => {
+    'use strict';
+
+    // ---- State ----
+    const state = {
+        mode: 'explorer', // 'explorer' | 'defviewer'
+        archive: null,      // LodFile | PakFile | null
+        archiveName: '',
+        archiveType: '',    // 'lod' | 'pak' | ''
+        archives: new Map(), // name -> {archive, type}
+        fileList: [],       // [{name, ext, category, size?}]
+        selectedFile: null,
+        defFiles: [],       // standalone DEF files loaded
+        pcxFiles: [],       // standalone PCX files loaded
+        standaloneFiles: new Map(), // name -> {data, type}
+
+        // Explorer
+        viewMode: 'list', // 'list' | 'grid'
+        iconSize: 64,
+
+        // DEF viewer state
+        currentDef: null,
+        defAnim: {
+            playing: false,
+            groupId: 0,
+            frameIdx: 0,
+            speed: 150,
+            how: 'combined',
+            timer: null
+        },
+
+        // Image viewer sidebar (removed)
+
+        // Def viewer sidebar
+        defViewMode: 'grid',
+        defIconSize: 64,
+        defAnimThumbs: false,
+
+        // Thumbnail cache
+        thumbCache: new Map(),
+
+        // Active thumbnail animation timers
+        thumbAnimTimers: [],
+
+        // Show image borders
+        showBorders: false
+    };
+
+    // ---- DOM refs ----
+    const $ = (s, p) => (p || document).querySelector(s);
+    const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+
+    const els = {};
+    function initRefs() {
+        els.fileInput = $('#file-input');
+        els.binInput = $('#bin-input');
+        els.welcomeScreen = $('#welcome-screen');
+        els.explorerScreen = $('#explorer-screen');
+        els.defviewerScreen = $('#defviewer-screen');
+        els.fileList = $('#file-list');
+        els.fileSearch = $('#file-search');
+        els.fileCount = $('#file-count');
+        els.archiveName = $('#archive-name');
+        els.archiveSelect = $('#archive-select');
+        els.explorerPreview = $('#explorer-preview');
+        els.defList = $('#def-list');
+        els.defviewerMain = $('#defviewer-main');
+        els.loadingOverlay = $('#loading-overlay');
+        els.loadingText = $('#loading-text');
+        els.loadingBar = $('#loading-progress-bar');
+        els.iconSizeSlider = $('#icon-size-slider');
+        els.iconSizeControl = $('#icon-size-control');
+        els.extFilter = $('#ext-filter');
+    }
+
+    // ---- Utilities ----
+    function toast(message, type = 'info') {
+        const container = $('#toast-container');
+        const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
+        const el = document.createElement('div');
+        el.className = `toast ${type}`;
+        el.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${escapeHtml(message)}</span>`;
+        container.appendChild(el);
+        setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(30px)'; setTimeout(() => el.remove(), 300); }, 4000);
+    }
+
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function showLoading(text = 'Loading...', progress = -1) {
+        els.loadingOverlay.style.display = 'flex';
+        els.loadingText.textContent = text;
+        els.loadingBar.style.width = progress >= 0 ? (progress * 100) + '%' : '0%';
+        if (progress < 0) {
+            els.loadingBar.style.width = '100%';
+            els.loadingBar.style.animation = 'pulse 1.5s ease-in-out infinite';
+        } else {
+            els.loadingBar.style.animation = 'none';
+        }
+    }
+
+    function hideLoading() {
+        els.loadingOverlay.style.display = 'none';
+    }
+
+    function formatSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function getFileIcon(ext) {
+        switch (ext) {
+            case 'pcx': return '🖼️';
+            case 'def': return '🎬';
+            case 'txt': case 'xls': case 'csv': return '📄';
+            case 'wav': case 'snd': return '🔊';
+            case 'msk': return '🎭';
+            case 'fnt': return '🔤';
+            case 'pal': return '🎨';
+            case 'h3m': return '🗺️';
+            case 'h3c': return '⚔️';
+            default: return '📁';
+        }
+    }
+
+    // ---- Export helpers ----
+    function exportBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+    }
+
+    function exportCanvasAsPng(canvas, filename) {
+        canvas.toBlob(blob => { if (blob) exportBlob(blob, filename); }, 'image/png');
+    }
+
+    // ---- Mode switching ----
+    function updateArchiveSelector() {
+        if (state.archives.size <= 1) {
+            els.archiveSelect.style.display = 'none';
+            els.archiveName.style.display = '';
+            return;
+        }
+        els.archiveSelect.style.display = '';
+        els.archiveName.style.display = 'none';
+        els.archiveSelect.innerHTML = '';
+        for (const name of state.archives.keys()) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === state.archiveName) opt.selected = true;
+            els.archiveSelect.appendChild(opt);
+        }
+    }
+
+    async function switchArchive(name) {
+        const info = state.archives.get(name);
+        if (!info) return;
+        state.archive = info.archive;
+        state.archiveName = name;
+        state.archiveType = info.type;
+        state.thumbCache.clear();
+        if (info.type === 'lod') buildFileList();
+        else if (info.type === 'pak') buildPakFileList();
+    }
+
+    function isStandaloneOnly() {
+        return !state.archive && state.standaloneFiles.size > 0;
+    }
+
+    function updateStandaloneUI() {
+        const standalone = isStandaloneOnly();
+        // Hide/show nav tabs
+        document.querySelector('.header-nav').style.display = standalone ? 'none' : '';
+        // Hide/show explorer sidebar + resize handle
+        const sidebar = document.querySelector('.explorer-sidebar');
+        const resizeHandle = document.getElementById('explorer-resize-handle');
+        if (sidebar) sidebar.style.display = standalone ? 'none' : '';
+        if (resizeHandle) resizeHandle.style.display = standalone ? 'none' : '';
+        // Hide/show defviewer sidebar + resize handle
+        const defSidebar = document.querySelector('.defviewer-sidebar');
+        const defResizeHandles = document.querySelectorAll('[data-resize="defviewer"]');
+        if (defSidebar) defSidebar.style.display = standalone ? 'none' : '';
+        defResizeHandles.forEach(h => h.style.display = standalone ? 'none' : '');
+    }
+
+    function setMode(mode) {
+        state.mode = mode;
+        $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        $$('.screen').forEach(s => s.classList.remove('active'));
+
+        // If nothing loaded, show welcome
+        if (!state.archive && state.standaloneFiles.size === 0) {
+            els.welcomeScreen.classList.add('active');
+            return;
+        }
+
+        switch (mode) {
+            case 'explorer':
+                els.explorerScreen.classList.add('active');
+                // Auto-select if standalone only
+                if (isStandaloneOnly() && state.fileList.length > 0) {
+                    updateStandaloneUI();
+                    setTimeout(() => selectFile(state.fileList[0]), 50);
+                }
+                break;
+            case 'defviewer':
+                els.defviewerScreen.classList.add('active');
+                if (isStandaloneOnly()) {
+                    updateStandaloneUI();
+                    // Auto-open the single standalone DEF
+                    for (const [name, info] of state.standaloneFiles) {
+                        if (info.type === 'def' && info.parsed) {
+                            setTimeout(() => openDefInViewer(name, info.parsed), 50);
+                            break;
+                        }
+                    }
+                } else {
+                    populateDefList();
+                }
+                break;
+        }
+    }
+
+    // ---- File input handling ----
+    function setupFileInput() {
+        els.fileInput.addEventListener('change', async (e) => {
+            const files = e.target.files;
+            if (!files.length) return;
+
+            for (const file of files) {
+                const ext = file.name.split('.').pop().toLowerCase();
+                const data = new Uint8Array(await file.arrayBuffer());
+
+                try {
+                    if (ext === 'lod') {
+                        showLoading('Parsing LOD archive...');
+                        state.archive = await H3.LodFile.open(data);
+                        state.archiveName = file.name;
+                        state.archiveType = 'lod';
+                        state.archives.set(file.name, { archive: state.archive, type: 'lod' });
+                        updateArchiveSelector();
+                        buildFileList();
+                        updateStandaloneUI();
+                        setMode('explorer');
+                        toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
+                    } else if (ext === 'pak') {
+                        showLoading('Parsing PAK archive...');
+                        state.archive = await H3.PakFile.open(data);
+                        state.archiveName = file.name;
+                        state.archiveType = 'pak';
+                        state.archives.set(file.name, { archive: state.archive, type: 'pak' });
+                        updateArchiveSelector();
+                        buildPakFileList();
+                        updateStandaloneUI();
+                        setMode('explorer');
+                        toast(`Loaded ${file.name}`, 'success');
+                    } else if (ext === 'def') {
+                        showLoading('Parsing DEF file...');
+                        const def = H3.DefFile.open(data);
+                        state.standaloneFiles.set(file.name, { data, type: 'def', parsed: def });
+                        if (!state.archive) {
+                            buildStandaloneFileList();
+                            setMode('defviewer');
+                        }
+                        toast(`Loaded DEF: ${file.name}`, 'success');
+                    } else if (ext === 'pcx') {
+                        showLoading('Parsing PCX file...');
+                        if (H3.PCX.isPcx(data)) {
+                            const img = H3.PCX.readPcx(data);
+                            state.standaloneFiles.set(file.name, { data, type: 'pcx', parsed: img });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            toast(`Loaded PCX: ${file.name}`, 'success');
+                        } else {
+                            toast(`Not a valid PCX file: ${file.name}`, 'error');
+                        }
+                    } else if (ext === 'run') {
+                        // HoMM3 demo .run file — process to extract LODs
+                        await processRunFile(file);
+                        continue;
+                    } else if (ext === 'exe') {
+                        await processExeFile(file);
+                        continue;
+                    }
+                } catch (err) {
+                    console.error(err);
+                    toast(`Error loading ${file.name}: ${err.message}`, 'error');
+                }
+            }
+            hideLoading();
+            e.target.value = '';
+        });
+    }
+
+    // ---- Build file list from LOD ----
+    function buildFileList() {
+        const list = state.archive.getFilelist();
+        state.fileList = list.map(name => {
+            const ext = H3.getFileExtension(name);
+            const category = H3.getFileCategory(name);
+            return { name, ext, category };
+        });
+        state.fileList.sort((a, b) => a.name.localeCompare(b.name));
+        updateExtFilter();
+        renderFileList();
+    }
+
+    function buildPakFileList() {
+        const sheets = state.archive.getSheetnames();
+        state.fileList = [];
+        for (const sheet of sheets) {
+            const filenames = state.archive.getFilenamesForSheet(sheet);
+            if (filenames) {
+                for (const fname of filenames) {
+                    state.fileList.push({ name: `${sheet}/${fname}`, ext: 'pak', category: 'image', sheet, imageName: fname });
+                }
+            }
+            state.fileList.push({ name: sheet, ext: 'pak-sheet', category: 'sheet', sheet });
+        }
+        state.fileList.sort((a, b) => a.name.localeCompare(b.name));
+        updateExtFilter();
+        renderFileList();
+    }
+
+    function buildStandaloneFileList() {
+        state.fileList = [];
+        for (const [name, info] of state.standaloneFiles) {
+            const ext = H3.getFileExtension(name) || info.type;
+            const category = H3.getFileCategory(name);
+            state.fileList.push({ name, ext, category, standalone: true });
+        }
+        state.fileList.sort((a, b) => a.name.localeCompare(b.name));
+        updateExtFilter();
+        renderFileList();
+    }
+
+    // ---- Render file list ----
+    function updateExtFilter() {
+        const exts = new Set();
+        for (const f of state.fileList) { if (f.ext) exts.add(f.ext); }
+        const sorted = [...exts].sort();
+        els.extFilter.innerHTML = '<option value="">All</option>';
+        for (const ext of sorted) {
+            const opt = document.createElement('option');
+            opt.value = ext;
+            opt.textContent = '.' + ext.toUpperCase();
+            els.extFilter.appendChild(opt);
+        }
+    }
+
+    function renderFileList(filter = '') {
+        const container = els.fileList;
+        container.innerHTML = '';
+        const filterLower = filter.toLowerCase();
+        const extFilterVal = els.extFilter ? els.extFilter.value : '';
+        const filtered = state.fileList.filter(f => {
+            if (filterLower && !f.name.toLowerCase().includes(filterLower)) return false;
+            if (extFilterVal && f.ext !== extFilterVal) return false;
+            return true;
+        });
+
+        els.fileCount.textContent = `${filtered.length} files`;
+        els.archiveName.textContent = state.archiveName || 'Files';
+
+        const isGrid = state.viewMode === 'grid';
+        container.className = `file-list ${isGrid ? 'grid-view' : 'list-view'}`;
+
+        if (isGrid) {
+            container.style.setProperty('--icon-size', state.iconSize + 'px');
+        }
+
+        for (const file of filtered) {
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.dataset.filename = file.name;
+
+            if (isGrid) {
+                item.style.width = Math.max(state.iconSize + 16, 72) + 'px';
+                const iconDiv = document.createElement('div');
+                iconDiv.className = 'file-item-icon';
+                iconDiv.style.height = state.iconSize + 'px';
+
+                // Show thumbnail for image types in grid view (lazy loaded)
+                if ((file.ext === 'pcx' || file.ext === 'def') && state.archiveType === 'lod') {
+                    iconDiv.textContent = getFileIcon(file.ext);
+                    iconDiv.dataset.lazyThumb = file.name;
+                } else {
+                    iconDiv.textContent = getFileIcon(file.ext);
+                }
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'file-item-name';
+                nameDiv.textContent = file.name;
+
+                item.appendChild(iconDiv);
+                item.appendChild(nameDiv);
+            } else {
+                item.innerHTML = `
+                    <span class="file-item-icon">${getFileIcon(file.ext)}</span>
+                    <span class="file-item-name">${escapeHtml(file.name)}</span>
+                    <span class="file-item-ext ext-${file.ext}">${file.ext}</span>
+                `;
+            }
+
+            item.addEventListener('click', () => selectFile(file));
+            container.appendChild(item);
+        }
+
+        // Lazy load thumbnails using IntersectionObserver
+        if (isGrid) {
+            const lazyEls = container.querySelectorAll('[data-lazy-thumb]');
+            if (lazyEls.length > 0) {
+                const observer = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting) {
+                            const el = entry.target;
+                            const fname = el.dataset.lazyThumb;
+                            if (fname) {
+                                loadThumbnail(fname, el);
+                                delete el.dataset.lazyThumb;
+                            }
+                            observer.unobserve(el);
+                        }
+                    }
+                }, { root: container, rootMargin: '200px' });
+                lazyEls.forEach(el => observer.observe(el));
+            }
+        }
+    }
+
+    async function loadThumbnail(filename, container) {
+        if (state.thumbCache.has(filename)) {
+            const cached = state.thumbCache.get(filename);
+            if (cached) {
+                const c = document.createElement('canvas');
+                c.width = cached.width;
+                c.height = cached.height;
+                c.getContext('2d').drawImage(cached, 0, 0);
+                container.textContent = '';
+                container.appendChild(c);
+            } else {
+                container.textContent = getFileIcon(H3.getFileExtension(filename));
+            }
+            return;
+        }
+
+        try {
+            const data = await state.archive.getFile(filename);
+            if (!data) { container.textContent = '❓'; return; }
+
+            const ext = H3.getFileExtension(filename);
+            if (ext === 'pcx' && H3.PCX.isPcx(data)) {
+                const img = H3.PCX.readPcx(data);
+                if (img) {
+                    state.thumbCache.set(filename, img.canvas);
+                    const c = document.createElement('canvas');
+                    c.width = img.canvas.width;
+                    c.height = img.canvas.height;
+                    c.getContext('2d').drawImage(img.canvas, 0, 0);
+                    container.textContent = '';
+                    container.appendChild(c);
+                    return;
+                }
+            }
+            if (ext === 'def') {
+                const def = H3.DefFile.open(data);
+                const groups = def.getGroups();
+                if (groups.length > 0) {
+                    const canvas = def.readImage('combined', groups[0], 0);
+                    if (canvas) {
+                        state.thumbCache.set(filename, canvas);
+                        const c = document.createElement('canvas');
+                        c.width = canvas.width;
+                        c.height = canvas.height;
+                        c.getContext('2d').drawImage(canvas, 0, 0);
+                        container.textContent = '';
+                        container.appendChild(c);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            // ignore
+        }
+        state.thumbCache.set(filename, null);
+        container.textContent = getFileIcon(H3.getFileExtension(filename));
+    }
+
+    // ---- Select file in explorer ----
+    async function selectFile(file) {
+        state.selectedFile = file;
+
+        // Highlight selection
+        $$('.file-item', els.fileList).forEach(el => {
+            el.classList.toggle('selected', el.dataset.filename === file.name);
+        });
+
+        const preview = els.explorerPreview;
+
+        try {
+            if (file.standalone) {
+                const info = state.standaloneFiles.get(file.name);
+                if (info.type === 'pcx') {
+                    showImagePreview(preview, info.parsed.canvas, file.name, `${info.parsed.width}×${info.parsed.height}`, info.parsed.type);
+                } else if (info.type === 'def') {
+                    showDefPreview(preview, info.parsed, file.name);
+                }
+                return;
+            }
+
+            if (state.archiveType === 'lod') {
+                showLoading('Loading file...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { showPreviewError(preview, 'File not found'); return; }
+
+                const ext = file.ext;
+
+                if (ext === 'pcx' && H3.PCX.isPcx(data)) {
+                    const img = H3.PCX.readPcx(data);
+                    if (img) {
+                        showImagePreview(preview, img.canvas, file.name, `${img.width}×${img.height}`, img.type, data);
+                    } else {
+                        showPreviewError(preview, 'Failed to decode PCX');
+                    }
+                } else if (ext === 'def') {
+                    const def = H3.DefFile.open(data);
+                    showDefPreview(preview, def, file.name);
+                } else if (ext === 'txt' || ext === 'xls' || ext === 'csv') {
+                    showTextPreview(preview, data, file.name);
+                } else {
+                    showBinaryPreview(preview, data, file.name);
+                }
+            } else if (state.archiveType === 'pak') {
+                if (file.imageName && file.sheet) {
+                    showLoading('Loading image...');
+                    const result = await state.archive.getImage(file.sheet, file.imageName);
+                    hideLoading();
+                    if (result) {
+                        showImagePreview(preview, result.image, file.name, `${result.image.width}×${result.image.height}`, 'pak');
+                    } else {
+                        showPreviewError(preview, 'Failed to load PAK image');
+                    }
+                } else if (file.category === 'sheet') {
+                    showLoading('Loading sheet...');
+                    const sheets = await state.archive.getSheets(file.sheet);
+                    hideLoading();
+                    if (sheets && sheets.length > 0) {
+                        showImagePreview(preview, sheets[0], file.name, `${sheets[0].width}×${sheets[0].height}`, 'pak-sheet');
+                    }
+                }
+            }
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            showPreviewError(preview, err.message);
+        }
+    }
+
+    // ---- Preview renderers ----
+    function showImagePreview(container, canvas, filename, dimensions, type, rawData) {
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${dimensions}</span>
+                        <span>${type.toUpperCase()}</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button title="Zoom fit" data-zoom="fit">⊡</button>
+                        <button title="Actual size" data-zoom="actual">1:1</button>
+                        <button title="2x" data-zoom="2x">2×</button>
+                        <button title="4x" data-zoom="4x">4×</button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□ Border</button>
+                        <button title="Export as PNG" id="export-png-btn">💾 PNG</button>
+                        ${rawData ? '<button title="Export original" id="export-orig-btn">💾 Orig</button>' : ''}
+                    </div>
+                </div>
+                <div class="preview-body checkerboard" id="preview-img-body"></div>
+            </div>
+        `;
+
+        const body = $('#preview-img-body', container);
+        const c = document.createElement('canvas');
+        c.width = canvas.width;
+        c.height = canvas.height;
+        c.getContext('2d').drawImage(canvas, 0, 0);
+        body.appendChild(c);
+        if (state.showBorders) c.classList.add('img-border');
+
+        // Border toggle
+        const borderBtn = container.querySelector('#border-toggle-btn');
+        if (borderBtn) {
+            borderBtn.addEventListener('click', () => {
+                state.showBorders = !state.showBorders;
+                borderBtn.classList.toggle('active', state.showBorders);
+                c.classList.toggle('img-border', state.showBorders);
+            });
+        }
+
+        // Zoom controls
+        $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const zoom = btn.dataset.zoom;
+                if (zoom === 'fit') {
+                    body.classList.remove('zoom-actual');
+                    c.style.transform = '';
+                } else if (zoom === 'actual') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = '';
+                } else if (zoom === '2x') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = 'scale(2)';
+                    c.style.transformOrigin = 'center';
+                } else if (zoom === '4x') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = 'scale(4)';
+                    c.style.transformOrigin = 'center';
+                }
+            });
+        });
+
+        // Export PNG
+        const pngBtn = container.querySelector('#export-png-btn');
+        if (pngBtn) pngBtn.addEventListener('click', () => exportCanvasAsPng(c, filename.replace(/\.[^.]+$/, '.png')));
+        // Export original
+        const origBtn = container.querySelector('#export-orig-btn');
+        if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+    }
+
+    function showDefPreview(container, def, filename) {
+        const groups = def.getGroups();
+        const size = def.getSize();
+        const typeName = def.getTypeName() || 'UNKNOWN';
+        const totalFrames = groups.reduce((s, g) => s + def.getFrameCount(g), 0);
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${size[0]}×${size[1]}</span>
+                        <span>Type: ${typeName}</span>
+                        <span>${groups.length} groups</span>
+                        <span>${totalFrames} frames</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button title="Open in Animation Viewer" id="btn-open-def-viewer">▶</button>
+                    </div>
+                </div>
+                <div class="preview-body checkerboard" id="preview-def-body"></div>
+            </div>
+        `;
+
+        // Auto-play animation loop in preview
+        const body = $('#preview-def-body', container);
+        if (groups.length > 0) {
+            const frameCount = def.getFrameCount(groups[0]);
+            const c = document.createElement('canvas');
+            body.appendChild(c);
+
+            let frameIdx = 0;
+            function drawFrame() {
+                const canvas = def.readImage('combined', groups[0], frameIdx);
+                if (canvas) {
+                    c.width = canvas.width;
+                    c.height = canvas.height;
+                    c.getContext('2d').drawImage(canvas, 0, 0);
+                }
+                frameIdx = (frameIdx + 1) % frameCount;
+            }
+            drawFrame();
+
+            if (frameCount > 1) {
+                const previewTimer = setInterval(drawFrame, 150);
+                // Clean up when container is replaced
+                const obs = new MutationObserver(() => {
+                    if (!container.contains(body)) {
+                        clearInterval(previewTimer);
+                        obs.disconnect();
+                    }
+                });
+                obs.observe(container, { childList: true, subtree: true });
+            }
+        }
+
+        // Open in full viewer
+        const btn = $('#btn-open-def-viewer', container);
+        if (btn) {
+            btn.addEventListener('click', () => {
+                // Store DEF file as standalone for the viewer
+                if (!state.standaloneFiles.has(filename)) {
+                    state.standaloneFiles.set(filename, { data: null, type: 'def', parsed: def });
+                }
+                setMode('defviewer');
+                setTimeout(() => openDefInViewer(filename, def), 50);
+            });
+        }
+    }
+
+    function showTextPreview(container, data, filename) {
+        let text;
+        try {
+            text = new TextDecoder('utf-8').decode(data);
+        } catch {
+            text = new TextDecoder('latin1').decode(data);
+        }
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${formatSize(data.length)}</span>
+                    </div>
+                </div>
+                <div class="preview-body" style="align-items:flex-start; justify-content:flex-start;">
+                    <div class="preview-text">${escapeHtml(text)}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    function showBinaryPreview(container, data, filename) {
+        const CHUNK = 4096; // lines rendered per batch
+        const totalLines = Math.ceil(data.length / 16);
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${formatSize(data.length)}</span>
+                        <span>Binary · ${totalLines} lines</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button id="hex-export-btn" title="Export original file">💾</button>
+                    </div>
+                </div>
+                <div class="preview-body" style="align-items:flex-start; justify-content:flex-start; padding:0;">
+                    <div class="preview-text" id="hex-view" style="padding:12px; tab-size:1;"></div>
+                </div>
+            </div>
+        `;
+
+        const hexView = container.querySelector('#hex-view');
+        let rendered = 0;
+
+        function renderHexChunk() {
+            const end = Math.min(rendered + CHUNK, totalLines);
+            let html = '';
+            for (let lineIdx = rendered; lineIdx < end; lineIdx++) {
+                const i = lineIdx * 16;
+                let line = i.toString(16).padStart(8, '0') + '  ';
+                let ascii = '';
+                for (let j = 0; j < 16; j++) {
+                    if (i + j < data.length) {
+                        line += data[i + j].toString(16).padStart(2, '0') + ' ';
+                        ascii += (data[i + j] >= 32 && data[i + j] < 127) ? String.fromCharCode(data[i + j]) : '.';
+                    } else {
+                        line += '   ';
+                        ascii += ' ';
+                    }
+                    if (j === 7) line += ' ';
+                }
+                html += line + ' |' + ascii + '|\n';
+            }
+            hexView.textContent += html;
+            rendered = end;
+        }
+
+        renderHexChunk();
+
+        // Lazy render more on scroll
+        const scrollParent = hexView.parentElement;
+        scrollParent.addEventListener('scroll', () => {
+            if (rendered < totalLines && scrollParent.scrollTop + scrollParent.clientHeight > scrollParent.scrollHeight - 500) {
+                renderHexChunk();
+            }
+        });
+
+        // Export original
+        const exportBtn = container.querySelector('#hex-export-btn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+        }
+    }
+
+    function showPreviewError(container, msg) {
+        container.innerHTML = `
+            <div class="preview-placeholder">
+                <span style="font-size:32px; opacity:.5">⚠️</span>
+                <p>${escapeHtml(msg)}</p>
+            </div>
+        `;
+    }
+
+    // ---- DEF Animation Viewer ----
+    function clearThumbAnimTimers() {
+        for (const t of state.thumbAnimTimers) clearInterval(t);
+        state.thumbAnimTimers = [];
+    }
+
+    function populateDefList() {
+        clearThumbAnimTimers();
+        const container = els.defList;
+        container.innerHTML = '';
+
+        const defs = [];
+
+        // From archive
+        if (state.archive && state.archiveType === 'lod') {
+            for (const f of state.fileList) {
+                if (f.ext === 'def') defs.push(f);
+            }
+        }
+
+        // Standalone
+        for (const [name, info] of state.standaloneFiles) {
+            if (info.type === 'def') {
+                defs.push({ name, ext: 'def', standalone: true });
+            }
+        }
+
+        if (defs.length === 0) {
+            container.innerHTML = '<div class="preview-placeholder" style="padding:20px;"><p>No DEF files found</p></div>';
+            return;
+        }
+
+        const isGrid = state.defViewMode === 'grid';
+        container.className = `file-list ${isGrid ? 'grid-view' : 'list-view'}`;
+        if (isGrid) container.style.setProperty('--icon-size', state.defIconSize + 'px');
+
+        for (const def of defs) {
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.dataset.filename = def.name;
+
+            if (isGrid) {
+                item.style.width = Math.max(state.defIconSize + 16, 72) + 'px';
+                const iconDiv = document.createElement('div');
+                iconDiv.className = 'file-item-icon';
+                iconDiv.style.height = state.defIconSize + 'px';
+                iconDiv.textContent = '🎬';
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'file-item-name';
+                nameDiv.textContent = def.name;
+
+                item.appendChild(iconDiv);
+                item.appendChild(nameDiv);
+
+                if (def.standalone) {
+                    const info = state.standaloneFiles.get(def.name);
+                    if (info && info.parsed) {
+                        if (state.defAnimThumbs) {
+                            startAnimatedThumb(iconDiv, info.parsed);
+                        } else {
+                            // Static first frame
+                            const groups = info.parsed.getGroups();
+                            if (groups.length > 0) {
+                                const canvas = info.parsed.readImage('combined', groups[0], 0);
+                                if (canvas) {
+                                    iconDiv.textContent = '';
+                                    const c = document.createElement('canvas');
+                                    c.width = canvas.width;
+                                    c.height = canvas.height;
+                                    c.getContext('2d').drawImage(canvas, 0, 0);
+                                    iconDiv.appendChild(c);
+                                }
+                            }
+                        }
+                    }
+                } else if (state.archiveType === 'lod') {
+                    iconDiv.dataset.lazyThumb = def.name;
+                    if (state.defAnimThumbs) iconDiv.dataset.animated = '1';
+                }
+            } else {
+                item.innerHTML = `
+                    <span class="file-item-icon">🎬</span>
+                    <span class="file-item-name">${escapeHtml(def.name)}</span>
+                `;
+            }
+
+            item.addEventListener('click', () => selectDefFile(def));
+            container.appendChild(item);
+        }
+
+        // Lazy load thumbnails via IntersectionObserver
+        if (isGrid) {
+            const lazyEls = container.querySelectorAll('[data-lazy-thumb]');
+            if (lazyEls.length > 0) {
+                const observer = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting) {
+                            const el = entry.target;
+                            const fname = el.dataset.lazyThumb;
+                            const animated = el.dataset.animated;
+                            if (fname) {
+                                if (animated) {
+                                    loadAnimatedThumbnail(fname, el);
+                                } else {
+                                    loadThumbnail(fname, el);
+                                }
+                                delete el.dataset.lazyThumb;
+                                delete el.dataset.animated;
+                            }
+                            observer.unobserve(el);
+                        }
+                    }
+                }, { root: container, rootMargin: '200px' });
+                lazyEls.forEach(el => observer.observe(el));
+            }
+        }
+
+        // Search
+        const search = $('#def-search');
+        search.oninput = () => {
+            const q = search.value.toLowerCase();
+            $$('.file-item', container).forEach(el => {
+                el.style.display = el.dataset.filename.toLowerCase().includes(q) ? '' : 'none';
+            });
+        };
+    }
+
+    function startAnimatedThumb(iconDiv, def) {
+        const groups = def.getGroups();
+        if (groups.length === 0) return;
+        const frameCount = def.getFrameCount(groups[0]);
+        const canvas = def.readImage('combined', groups[0], 0);
+        if (!canvas) return;
+
+        iconDiv.textContent = '';
+        const c = document.createElement('canvas');
+        c.width = canvas.width;
+        c.height = canvas.height;
+        c.getContext('2d').drawImage(canvas, 0, 0);
+        iconDiv.appendChild(c);
+
+        if (frameCount > 1) {
+            let fi = 0;
+            const timer = setInterval(() => {
+                fi = (fi + 1) % frameCount;
+                const frame = def.readImage('combined', groups[0], fi);
+                if (frame) {
+                    c.width = frame.width;
+                    c.height = frame.height;
+                    c.getContext('2d').drawImage(frame, 0, 0);
+                }
+            }, 200);
+            state.thumbAnimTimers.push(timer);
+        }
+    }
+
+    async function loadAnimatedThumbnail(filename, container) {
+        try {
+            const data = await state.archive.getFile(filename);
+            if (!data) { container.textContent = '🎬'; return; }
+            const def = H3.DefFile.open(data);
+            // Cache for later
+            if (!state.standaloneFiles.has(filename)) {
+                state.standaloneFiles.set(filename, { data, type: 'def', parsed: def });
+            }
+            startAnimatedThumb(container, def);
+        } catch (e) {
+            container.textContent = '🎬';
+        }
+    }
+
+    async function selectDefFile(file) {
+        // Highlight
+        $$('.file-item', els.defList).forEach(el => {
+            el.classList.toggle('selected', el.dataset.filename === file.name);
+        });
+
+        try {
+            let def;
+            if (file.standalone) {
+                def = state.standaloneFiles.get(file.name).parsed;
+            } else {
+                showLoading('Parsing DEF...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { toast('File not found', 'error'); return; }
+                def = H3.DefFile.open(data);
+                // Cache
+                state.standaloneFiles.set(file.name, { data, type: 'def', parsed: def });
+            }
+            openDefInViewer(file.name, def);
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('Error loading DEF: ' + err.message, 'error');
+        }
+    }
+
+    function openDefInViewer(filename, def) {
+        // Stop any running animation
+        if (state.defAnim.timer) {
+            clearInterval(state.defAnim.timer);
+            state.defAnim.timer = null;
+        }
+
+        state.currentDef = def;
+        state.defAnim.playing = false;
+        state.defAnim.frameIdx = 0;
+
+        const groups = def.getGroups();
+        const size = def.getSize();
+        const typeName = def.getTypeName() || 'UNKNOWN';
+        state.defAnim.groupId = groups[0] || 0;
+
+        const main = els.defviewerMain;
+        main.innerHTML = `
+            <div class="def-info-panel">
+                <div class="def-info-header">
+                    <h3>${escapeHtml(filename)}</h3>
+                    <div class="def-info-grid">
+                        <div class="def-info-item">
+                            <span class="def-info-label">Type</span>
+                            <span class="def-info-value">${typeName} (0x${(def.getType() || 0).toString(16)})</span>
+                        </div>
+                        <div class="def-info-item">
+                            <span class="def-info-label">Size</span>
+                            <span class="def-info-value">${size[0]}×${size[1]}</span>
+                        </div>
+                        <div class="def-info-item">
+                            <span class="def-info-label">Groups</span>
+                            <span class="def-info-value">${groups.length}</span>
+                        </div>
+                        <div class="def-info-item">
+                            <span class="def-info-label">Total Frames</span>
+                            <span class="def-info-value">${groups.reduce((s, g) => s + def.getFrameCount(g), 0)}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="def-animation-area">
+                    <div class="def-player" id="def-player"></div>
+
+                    <div class="def-controls">
+                        <button id="def-play" title="Play/Pause">▶</button>
+                        <button id="def-prev" title="Previous Frame">⏮</button>
+                        <button id="def-next" title="Next Frame">⏭</button>
+
+                        <div class="speed-control">
+                            <label>Speed</label>
+                            <input type="range" id="def-speed" min="16" max="500" value="${state.defAnim.speed}" step="1">
+                            <span class="speed-value" id="def-speed-val">${state.defAnim.speed}ms</span>
+                        </div>
+
+                        <div class="group-select">
+                            <label>Group</label>
+                            <select id="def-group">
+                                ${groups.map(g => `<option value="${g}"${g === state.defAnim.groupId ? ' selected' : ''}>Group ${g} (${def.getFrameCount(g)} frames)</option>`).join('')}
+                            </select>
+                        </div>
+
+                        <div class="render-mode">
+                            <label>Mode</label>
+                            <select id="def-how">
+                                <option value="combined"${state.defAnim.how === 'combined' ? ' selected' : ''}>Combined</option>
+                                <option value="normal"${state.defAnim.how === 'normal' ? ' selected' : ''}>Normal</option>
+                                <option value="shadow"${state.defAnim.how === 'shadow' ? ' selected' : ''}>Shadow</option>
+                                <option value="overlay"${state.defAnim.how === 'overlay' ? ' selected' : ''}>Overlay</option>
+                            </select>
+                        </div>
+
+                        <span class="frame-info" id="def-frame-info">Frame 0/0</span>
+
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-border-toggle">□ Border</button>
+
+                        <div class="def-export-btns">
+                            <button id="def-export-orig" title="Export original DEF file">💾 Orig</button>
+                            <button id="def-export-png" title="Export current frame as PNG">💾 PNG</button>
+                            <button id="def-export-seq" title="Export all frames as PNG sequence">💾 Seq</button>
+                            <button id="def-export-gif" title="Export animation as GIF">💾 GIF</button>
+                        </div>
+                    </div>
+
+                    <div class="def-frames-panel">
+                        <div class="def-frames-header">Frames</div>
+                        <div class="def-frames-strip" id="def-frames-strip"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Setup controls
+        setupDefControls(def, filename);
+
+        // Initial render
+        renderDefFrames(def);
+        renderDefFrame(def);
+
+        // Auto-play if animated
+        const autoFrames = def.getFrameCount(state.defAnim.groupId);
+        if (autoFrames > 1) {
+            state.defAnim.playing = true;
+            const playBtn = $('#def-play');
+            if (playBtn) {
+                playBtn.textContent = '⏸';
+                playBtn.classList.add('active');
+            }
+            startDefAnimation(def);
+        }
+    }
+
+    function setupDefControls(def, filename) {
+        const playBtn = $('#def-play');
+        const prevBtn = $('#def-prev');
+        const nextBtn = $('#def-next');
+        const speedSlider = $('#def-speed');
+        const speedVal = $('#def-speed-val');
+        const groupSelect = $('#def-group');
+        const howSelect = $('#def-how');
+
+        playBtn.addEventListener('click', () => {
+            state.defAnim.playing = !state.defAnim.playing;
+            playBtn.textContent = state.defAnim.playing ? '⏸' : '▶';
+            playBtn.classList.toggle('active', state.defAnim.playing);
+
+            if (state.defAnim.playing) {
+                startDefAnimation(def);
+            } else {
+                if (state.defAnim.timer) {
+                    clearInterval(state.defAnim.timer);
+                    state.defAnim.timer = null;
+                }
+            }
+        });
+
+        prevBtn.addEventListener('click', () => {
+            const frames = def.getFrameCount(state.defAnim.groupId);
+            if (frames > 0) {
+                state.defAnim.frameIdx = (state.defAnim.frameIdx - 1 + frames) % frames;
+                renderDefFrame(def);
+                highlightDefFrameThumb();
+            }
+        });
+
+        nextBtn.addEventListener('click', () => {
+            const frames = def.getFrameCount(state.defAnim.groupId);
+            if (frames > 0) {
+                state.defAnim.frameIdx = (state.defAnim.frameIdx + 1) % frames;
+                renderDefFrame(def);
+                highlightDefFrameThumb();
+            }
+        });
+
+        speedSlider.addEventListener('input', () => {
+            state.defAnim.speed = parseInt(speedSlider.value);
+            speedVal.textContent = state.defAnim.speed + 'ms';
+            if (state.defAnim.playing) {
+                clearInterval(state.defAnim.timer);
+                startDefAnimation(def);
+            }
+        });
+
+        groupSelect.addEventListener('change', () => {
+            state.defAnim.groupId = parseInt(groupSelect.value);
+            state.defAnim.frameIdx = 0;
+            renderDefFrames(def);
+            renderDefFrame(def);
+        });
+
+        howSelect.addEventListener('change', () => {
+            state.defAnim.how = howSelect.value;
+            renderDefFrames(def);
+            renderDefFrame(def);
+        });
+
+        // Border toggle
+        const defBorderToggle = $('#def-border-toggle');
+        if (defBorderToggle) {
+            defBorderToggle.addEventListener('click', () => {
+                state.showBorders = !state.showBorders;
+                defBorderToggle.classList.toggle('active', state.showBorders);
+                renderDefFrame(def);
+            });
+        }
+
+        // Export buttons
+        const exportOrig = $('#def-export-orig');
+        const exportPng = $('#def-export-png');
+        const exportSeq = $('#def-export-seq');
+        const exportGif = $('#def-export-gif');
+
+        if (exportOrig) {
+            exportOrig.addEventListener('click', () => {
+                const info = state.standaloneFiles.get(filename);
+                if (info && info.data) {
+                    exportBlob(new Blob([info.data]), filename);
+                } else {
+                    toast('Original data not available', 'warning');
+                }
+            });
+        }
+
+        if (exportPng) {
+            exportPng.addEventListener('click', () => {
+                const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, state.defAnim.frameIdx);
+                if (canvas) exportCanvasAsPng(canvas, `frame_${state.defAnim.groupId}_${state.defAnim.frameIdx}.png`);
+            });
+        }
+
+        if (exportSeq) {
+            exportSeq.addEventListener('click', () => {
+                const frameCount = def.getFrameCount(state.defAnim.groupId);
+                for (let i = 0; i < frameCount; i++) {
+                    const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, i);
+                    if (canvas) exportCanvasAsPng(canvas, `frame_${state.defAnim.groupId}_${String(i).padStart(4, '0')}.png`);
+                }
+                toast(`Exported ${frameCount} frames`, 'success');
+            });
+        }
+
+        if (exportGif) {
+            exportGif.addEventListener('click', async () => {
+                if (typeof GIF === 'undefined') {
+                    toast('gif.js not loaded', 'error');
+                    return;
+                }
+                const frameCount = def.getFrameCount(state.defAnim.groupId);
+                if (frameCount === 0) return;
+
+                const size = def.getSize();
+                // Fetch worker script as blob to avoid CORS issues
+                let workerBlob = window._gifWorkerBlob;
+                if (!workerBlob) {
+                    try {
+                        const resp = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
+                        const text = await resp.text();
+                        workerBlob = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+                        window._gifWorkerBlob = workerBlob;
+                    } catch (e) {
+                        toast('Failed to load GIF worker: ' + e.message, 'error');
+                        return;
+                    }
+                }
+
+                const gif = new GIF({
+                    workers: 2,
+                    quality: 10,
+                    width: size[0],
+                    height: size[1],
+                    workerScript: workerBlob
+                });
+
+                for (let i = 0; i < frameCount; i++) {
+                    const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, i);
+                    if (canvas) {
+                        const c = document.createElement('canvas');
+                        c.width = size[0];
+                        c.height = size[1];
+                        const ctx = c.getContext('2d');
+                        ctx.drawImage(canvas, 0, 0);
+                        gif.addFrame(c, { delay: state.defAnim.speed, copy: true });
+                    }
+                }
+
+                toast('Encoding GIF...', 'info');
+                gif.on('finished', blob => {
+                    exportBlob(blob, `animation_group${state.defAnim.groupId}.gif`);
+                    toast('GIF exported!', 'success');
+                });
+                gif.render();
+            });
+        }
+    }
+
+    function startDefAnimation(def) {
+        state.defAnim.timer = setInterval(() => {
+            const frames = def.getFrameCount(state.defAnim.groupId);
+            if (frames > 0) {
+                state.defAnim.frameIdx = (state.defAnim.frameIdx + 1) % frames;
+                renderDefFrame(def);
+                highlightDefFrameThumb();
+            }
+        }, state.defAnim.speed);
+    }
+
+    function renderDefFrame(def) {
+        const player = $('#def-player');
+        if (!player) return;
+
+        const frameInfo = $('#def-frame-info');
+        const frameCount = def.getFrameCount(state.defAnim.groupId);
+        if (frameInfo) {
+            frameInfo.textContent = `Frame ${state.defAnim.frameIdx + 1}/${frameCount}`;
+        }
+
+        const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, state.defAnim.frameIdx);
+        player.innerHTML = '';
+        if (canvas) {
+            const c = document.createElement('canvas');
+            c.width = canvas.width;
+            c.height = canvas.height;
+            c.getContext('2d').drawImage(canvas, 0, 0);
+            if (state.showBorders) c.classList.add('img-border');
+            player.appendChild(c);
+        } else {
+            player.innerHTML = '<p style="color:var(--text-muted);">No image for this mode</p>';
+        }
+    }
+
+    function renderDefFrames(def) {
+        const strip = $('#def-frames-strip');
+        if (!strip) return;
+        strip.innerHTML = '';
+
+        const frameCount = def.getFrameCount(state.defAnim.groupId);
+        for (let i = 0; i < frameCount; i++) {
+            const thumb = document.createElement('div');
+            thumb.className = 'def-frame-thumb' + (i === state.defAnim.frameIdx ? ' active' : '');
+            thumb.dataset.frame = i;
+
+            const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, i);
+            if (canvas) {
+                const c = document.createElement('canvas');
+                c.width = canvas.width;
+                c.height = canvas.height;
+                c.getContext('2d').drawImage(canvas, 0, 0);
+                thumb.appendChild(c);
+            }
+
+            const num = document.createElement('span');
+            num.className = 'frame-number';
+            num.textContent = i;
+            thumb.appendChild(num);
+
+            thumb.addEventListener('click', () => {
+                state.defAnim.frameIdx = i;
+                renderDefFrame(def);
+                highlightDefFrameThumb();
+            });
+
+            strip.appendChild(thumb);
+        }
+    }
+
+    function highlightDefFrameThumb() {
+        const strip = $('#def-frames-strip');
+        if (!strip) return;
+        $$('.def-frame-thumb', strip).forEach(t => {
+            t.classList.toggle('active', parseInt(t.dataset.frame) === state.defAnim.frameIdx);
+        });
+        // Scroll active thumb into view
+        const active = $('.def-frame-thumb.active', strip);
+        if (active) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+
+    // ---- Demo download (100% client-side) ----
+    const DEMO_URL = 'https://web.archive.org/web/20150506062114if_/http://updates.lokigames.com/loki_demos/heroes3-demo.run';
+
+    function downloadDemo() {
+        // Show modal dialog with instructions
+        const overlay = document.createElement('div');
+        overlay.className = 'loading-overlay';
+        overlay.style.display = 'flex';
+        overlay.style.cursor = 'default';
+        overlay.innerHTML = `
+            <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); padding:28px 32px; max-width:520px; width:90%; box-shadow:var(--shadow-lg); text-align:center;">
+                <div style="font-size:40px; margin-bottom:12px;">🏰</div>
+                <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 Demo laden</h2>
+                <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
+                    Die Demo muss manuell heruntergeladen werden (Browser-Sicherheit verhindert direkten Download von archive.org).<br>
+                    Danach die <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code>-Datei hier laden — alles wird lokal im Browser verarbeitet.
+                </p>
+                <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+                    <a href="${DEMO_URL}" download="heroes3-demo.run" target="_blank" rel="noopener" class="welcome-btn secondary" style="text-decoration:none; justify-content:center; width:100%;">
+                        ⬇️&nbsp; 1. Demo herunterladen (~100 MB)
+                    </a>
+                    <button id="demo-load-run" class="welcome-btn primary" style="width:100%; justify-content:center;">
+                        📂&nbsp; 2. Heruntergeladene .run-Datei öffnen
+                    </button>
+                    <button id="demo-cancel" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
+                        Abbrechen
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const runInput = document.createElement('input');
+        runInput.type = 'file';
+        runInput.accept = '.run';
+        runInput.style.display = 'none';
+        document.body.appendChild(runInput);
+
+        overlay.querySelector('#demo-cancel').addEventListener('click', () => {
+            overlay.remove();
+            runInput.remove();
+        });
+
+        overlay.querySelector('#demo-load-run').addEventListener('click', () => {
+            runInput.click();
+        });
+
+        runInput.addEventListener('change', async (e) => {
+            overlay.remove();
+            const file = e.target.files[0];
+            runInput.remove();
+            if (!file) return;
+            await processRunFile(file);
+        });
+    }
+
+    async function processRunFile(file) {
+        showLoading('Reading file...', 0);
+
+        try {
+            const arrayBuf = await file.arrayBuffer();
+            let allData = new Uint8Array(arrayBuf);
+
+            // Find END_OF_STUB\n marker
+            const marker = new TextEncoder().encode('END_OF_STUB\n');
+            let markerPos = -1;
+            for (let i = 0; i < allData.length - marker.length; i++) {
+                let found = true;
+                for (let j = 0; j < marker.length; j++) {
+                    if (allData[i + j] !== marker[j]) { found = false; break; }
+                }
+                if (found) { markerPos = i + marker.length; break; }
+            }
+
+            if (markerPos === -1) throw new Error('Invalid demo file format');
+
+            // Decompress tar.gz
+            showLoading('Decompressing...', -1);
+            const gzData = allData.slice(markerPos);
+            allData = null; // free memory
+
+            const tarData = await H3.gzipDecompress(gzData);
+
+            // Parse tar to find LOD files
+            showLoading('Extracting files...', -1);
+            const files = parseTar(tarData);
+
+            let loadedCount = 0;
+            for (const [name, fileData] of files) {
+                if (name.endsWith('h3bitmap.lod') || name.endsWith('h3sprite.lod')) {
+                    const basename = name.split('/').pop();
+                    const lodData = new Uint8Array(fileData);
+                    state.standaloneFiles.set(basename, { data: lodData, type: 'lod-archive' });
+                    loadedCount++;
+
+                    // Parse and register
+                    showLoading(`Parsing ${basename}...`, -1);
+                    const archive = await H3.LodFile.open(lodData);
+                    const displayName = basename + ' (Demo)';
+                    state.archives.set(displayName, { archive, type: 'lod' });
+                }
+            }
+
+            // Auto-open h3bitmap.lod
+            const bitmapEntry = state.archives.get('h3bitmap.lod (Demo)');
+            if (bitmapEntry) {
+                state.archive = bitmapEntry.archive;
+                state.archiveName = 'h3bitmap.lod (Demo)';
+                state.archiveType = 'lod';
+                updateArchiveSelector();
+                buildFileList();
+            } else if (state.archives.size > 0) {
+                const [firstName, firstEntry] = state.archives.entries().next().value;
+                state.archive = firstEntry.archive;
+                state.archiveName = firstName;
+                state.archiveType = firstEntry.type;
+                updateArchiveSelector();
+                buildFileList();
+            }
+
+            hideLoading();
+            setMode('explorer');
+            toast(`Demo loaded! Found ${loadedCount} LOD archives.`, 'success');
+
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('Demo download failed: ' + err.message, 'error');
+        }
+    }
+
+    // ---- GOG EXE Installer processing ----
+    async function processExeFile(file) {
+        showLoading('EXE wird gelesen...', 0);
+
+        try {
+            const exeData = new Uint8Array(await file.arrayBuffer());
+
+            if (!InnoExtract.isHeroes3Installer(exeData)) {
+                hideLoading();
+                toast('Kein HoMM3 GOG-Installer erkannt.', 'error');
+                return;
+            }
+
+            hideLoading();
+
+            // Ask for BIN file
+            const binFile = await askForBinFile(file.name);
+            if (!binFile) return;
+
+            showLoading('Installer wird analysiert...', -1);
+            const { dataEntries, fileMap } = InnoExtract.parseExe(exeData);
+
+            // Filter to LOD files
+            const lodFiles = [];
+            for (const [name, info] of fileMap) {
+                if (name.toLowerCase().endsWith('.lod')) {
+                    lodFiles.push({ name, info });
+                }
+            }
+
+            if (lodFiles.length === 0) {
+                hideLoading();
+                toast('Keine LOD-Dateien im Installer gefunden.', 'error');
+                return;
+            }
+
+            // Extract LOD files
+            let extracted = 0;
+            const totalChunks = lodFiles.reduce((s, f) => s + f.info.chunkCount, 0);
+            let doneChunks = 0;
+
+            for (const { name, info } of lodFiles) {
+                showLoading(`Extrahiere ${name}...`, doneChunks / totalChunks);
+
+                const data = await InnoExtract.extractFile(binFile, dataEntries, info, (done, total) => {
+                    showLoading(`Extrahiere ${name}... (${done}/${total})`, (doneChunks + done) / totalChunks);
+                });
+
+                doneChunks += info.chunkCount;
+
+                // Parse as LOD archive
+                showLoading(`Parse ${name}...`, doneChunks / totalChunks);
+                const archive = await H3.LodFile.open(data);
+                const displayName = name + ' (GOG)';
+                state.archives.set(displayName, { archive, type: 'lod' });
+                extracted++;
+            }
+
+            // Auto-open first bitmap LOD
+            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('h3bitmap'));
+            if (bitmapKey) {
+                const entry = state.archives.get(bitmapKey);
+                state.archive = entry.archive;
+                state.archiveName = bitmapKey;
+                state.archiveType = 'lod';
+            } else if (state.archives.size > 0) {
+                const [firstName, firstEntry] = state.archives.entries().next().value;
+                state.archive = firstEntry.archive;
+                state.archiveName = firstName;
+                state.archiveType = firstEntry.type;
+            }
+
+            updateArchiveSelector();
+            buildFileList();
+            hideLoading();
+            setMode('explorer');
+            toast(`${extracted} LOD-Archive aus GOG-Installer extrahiert!`, 'success');
+
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('Fehler beim Extrahieren: ' + err.message, 'error');
+        }
+    }
+
+    function askForBinFile(exeName) {
+        return new Promise((resolve) => {
+            // Derive expected BIN name
+            const baseName = exeName.replace(/\.exe$/i, '');
+            const expectedBin = baseName + '-1.bin';
+
+            const overlay = document.createElement('div');
+            overlay.className = 'loading-overlay';
+            overlay.style.display = 'flex';
+            overlay.style.cursor = 'default';
+            overlay.innerHTML = `
+                <div style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius-lg); padding:28px 32px; max-width:520px; width:90%; box-shadow:var(--shadow-lg); text-align:center;">
+                    <div style="font-size:40px; margin-bottom:12px;">⚔️</div>
+                    <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 GOG-Installer erkannt!</h2>
+                    <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
+                        Zum Extrahieren der Spieldaten wird die zugehörige BIN-Datei benötigt.<br>
+                        Bitte wähle <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">${escapeHtml(expectedBin)}</code> aus demselben Verzeichnis.
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+                        <button id="bin-select-btn" class="welcome-btn primary" style="width:100%; justify-content:center;">
+                            📂&nbsp; BIN-Datei auswählen
+                        </button>
+                        <button id="bin-cancel" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
+                            Abbrechen
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            overlay.querySelector('#bin-cancel').addEventListener('click', () => {
+                overlay.remove();
+                resolve(null);
+            });
+
+            overlay.querySelector('#bin-select-btn').addEventListener('click', () => {
+                els.binInput.click();
+            });
+
+            const handler = (e) => {
+                overlay.remove();
+                els.binInput.removeEventListener('change', handler);
+                const f = e.target.files[0];
+                els.binInput.value = '';
+                resolve(f || null);
+            };
+            els.binInput.addEventListener('change', handler);
+        });
+    }
+
+    // Simple tar parser
+    function parseTar(data) {
+        const files = [];
+        let offset = 0;
+        const td = new TextDecoder('ascii');
+
+        while (offset + 512 <= data.length) {
+            const header = data.slice(offset, offset + 512);
+
+            // Check for empty block
+            let allZero = true;
+            for (let i = 0; i < 512; i++) {
+                if (header[i] !== 0) { allZero = false; break; }
+            }
+            if (allZero) break;
+
+            // Filename at offset 0, 100 bytes
+            let filename = td.decode(header.slice(0, 100));
+            const nullIdx = filename.indexOf('\0');
+            if (nullIdx >= 0) filename = filename.substring(0, nullIdx);
+
+            // Size at offset 124, 12 bytes (octal)
+            let sizeStr = td.decode(header.slice(124, 136)).trim();
+            sizeStr = sizeStr.replace(/\0/g, '');
+            const fileSize = parseInt(sizeStr, 8) || 0;
+
+            // Type at offset 156
+            const type = header[156];
+
+            offset += 512;
+
+            if (fileSize > 0 && (type === 0 || type === 48)) { // regular file
+                files.push([filename, data.slice(offset, offset + fileSize)]);
+            }
+
+            // Advance past file data (padded to 512)
+            offset += Math.ceil(fileSize / 512) * 512;
+        }
+
+        return files;
+    }
+
+    // ---- Resize handle ----
+    function setupResizeHandle() {
+        document.querySelectorAll('.resize-handle').forEach(handle => {
+            const sidebar = handle.previousElementSibling;
+            const layout = handle.parentElement;
+            if (!sidebar || !layout) return;
+
+            let startX, startWidth;
+
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                startX = e.clientX;
+                startWidth = sidebar.getBoundingClientRect().width;
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+
+                function onMouseMove(e) {
+                    const newWidth = Math.max(180, Math.min(startWidth + e.clientX - startX, layout.clientWidth - 200));
+                    sidebar.style.width = newWidth + 'px';
+                    sidebar.style.minWidth = newWidth + 'px';
+                    sidebar.style.maxWidth = newWidth + 'px';
+                }
+
+                function onMouseUp() {
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+        });
+    }
+
+    // ---- Event wiring ----
+    function init() {
+        initRefs();
+        setupFileInput();
+
+        // Nav buttons
+        $$('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => setMode(btn.dataset.mode));
+        });
+
+        // Open file buttons
+        const triggerFileInput = () => els.fileInput.click();
+        $('#btn-open-file').addEventListener('click', triggerFileInput);
+        $('#welcome-open').addEventListener('click', triggerFileInput);
+
+        // Demo download
+        $('#btn-download-demo').addEventListener('click', downloadDemo);
+        $('#welcome-demo').addEventListener('click', downloadDemo);
+
+        // Archive switcher
+        els.archiveSelect.addEventListener('change', async () => {
+            const name = els.archiveSelect.value;
+            await switchArchive(name);
+            setMode(state.mode);
+        });
+
+        // View toggle
+        $$('.view-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                state.viewMode = btn.dataset.view;
+                $$('.view-btn').forEach(b => b.classList.toggle('active', b.dataset.view === state.viewMode));
+                els.iconSizeControl.style.display = state.viewMode === 'grid' ? 'flex' : 'none';
+                renderFileList(els.fileSearch.value);
+            });
+        });
+
+        // Icon size slider
+        els.iconSizeSlider.addEventListener('input', () => {
+            state.iconSize = parseInt(els.iconSizeSlider.value);
+            renderFileList(els.fileSearch.value);
+        });
+
+        // File search
+        els.fileSearch.addEventListener('input', () => {
+            renderFileList(els.fileSearch.value);
+        });
+
+        // Extension filter
+        els.extFilter.addEventListener('change', () => {
+            renderFileList(els.fileSearch.value);
+        });
+
+        // Resize handles for all sidebars
+        setupResizeHandle();
+
+        // Def viewer sidebar: view toggle + size slider
+        $$('.view-btn[data-target="def"]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                state.defViewMode = btn.dataset.view;
+                $$('.view-btn[data-target="def"]').forEach(b => b.classList.toggle('active', b.dataset.view === state.defViewMode));
+                document.querySelector('.def-size-control').style.display = state.defViewMode === 'grid' ? 'flex' : 'none';
+                populateDefList();
+            });
+        });
+        const defSizeSlider = $('#def-icon-size-slider');
+        if (defSizeSlider) {
+            defSizeSlider.addEventListener('input', () => {
+                state.defIconSize = parseInt(defSizeSlider.value);
+                populateDefList();
+            });
+        }
+
+        // Animated thumbnail toggle
+        const animThumbToggle = $('#def-anim-thumb-toggle');
+        if (animThumbToggle) {
+            animThumbToggle.addEventListener('click', () => {
+                state.defAnimThumbs = !state.defAnimThumbs;
+                animThumbToggle.classList.toggle('active', state.defAnimThumbs);
+                populateDefList();
+            });
+        }
+
+        // Start at welcome
+        setMode('explorer');
+
+        // Add pulse animation for loading bar
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes pulse {
+                0%,100% { opacity: .5; }
+                50% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+})();
