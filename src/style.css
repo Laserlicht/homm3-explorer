@@ -334,7 +334,7 @@ body {
 }
 
 .explorer-sidebar {
-    width: 380px;
+    width: clamp(280px, 33.333vw, 50%);
     min-width: 280px;
     max-width: 50%;
     display: flex;
@@ -861,7 +861,9 @@ body {
 }
 
 .defviewer-sidebar {
-    width: 300px;
+    width: clamp(280px, 33.333vw, 50%);
+    min-width: 280px;
+    max-width: 50%;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--border);
@@ -1234,7 +1236,7 @@ body {
 @media (max-width: 768px) {
     .header-nav span { display: none; }
     .action-btn span { display: none; }
-    .explorer-sidebar { width: 260px; }
+    .explorer-sidebar { width: clamp(200px, 33.333vw, 50%); }
 }
 
 /* ---- Resize handle ---- */

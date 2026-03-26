@@ -65,6 +65,10 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 
 `video-decoders.js` contains algorithms and data tables derived from [FFmpeg](https://ffmpeg.org) (`libavcodec/smacker.c`, `bink.c`, `binkb.c`) and is therefore licensed under the **GNU Lesser General Public License v2.1 or later** — see [LICENSE-LGPL](LICENSE-LGPL).
 
+HoMM3 format documentation and research courtesy of the [VCMI Project](https://vcmi.eu).
+
+Inno Setup installer format structure based on research from [innoextract](https://github.com/dscharrer/innoextract) by Daniel Scharrer (zlib/libpng license).
+
 ---
 
 *Heroes of Might and Magic III is a trademark of Ubisoft. This project is not affiliated with or endorsed by Ubisoft.*
