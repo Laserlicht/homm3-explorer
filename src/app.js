@@ -462,6 +462,19 @@
                             setMode('defviewer');
                         }
                         toast(`Loaded D32: ${file.name}`, 'success');
+                    } else if (ext === 'fnt') {
+                        showLoading('Parsing FNT file...');
+                        if (H3.FNT.isFnt(data)) {
+                            const font = H3.FNT.readFnt(data);
+                            state.standaloneFiles.set(file.name, { data, type: 'fnt', parsed: font });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            toast(`Loaded FNT: ${file.name}`, 'success');
+                        } else {
+                            toast(`Not a valid FNT file: ${file.name}`, 'error');
+                        }
                     }
                 } catch (err) {
                     console.error(err);
@@ -783,6 +796,8 @@
                     showImagePreview(preview, info.parsed.canvas, file.name, `${info.parsed.width}×${info.parsed.height}`, info.parsed.type);
                 } else if (info.type === 'def') {
                     showDefPreview(preview, info.parsed, file.name);
+                } else if (info.type === 'fnt') {
+                    showFntPreview(preview, info.parsed, file.name, info.data);
                 }
                 return;
             }
@@ -805,6 +820,9 @@
                 } else if (ext === 'def') {
                     const def = H3.DefFile.open(data);
                     showDefPreview(preview, def, file.name);
+                } else if (ext === 'fnt' && H3.FNT.isFnt(data)) {
+                    const font = H3.FNT.readFnt(data);
+                    showFntPreview(preview, font, file.name, data);
                 } else if (ext === 'txt' || ext === 'xls' || ext === 'csv') {
                     showTextPreview(preview, data, file.name);
                 } else if (ext === 'wav' || (ext === '' && isWavData(data))) {
@@ -1144,6 +1162,64 @@
                 setTimeout(() => openDefInViewer(filename, def), 50);
             });
         }
+    }
+
+    function showFntPreview(container, font, filename, rawData) {
+        let borders = state.showBorders;
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>256 glyphs</span>
+                        <span>Height: ${font.height}px</span>
+                        <span>FNT</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button title="Zoom fit" data-zoom="fit">⊡</button>
+                        <button title="Actual size" data-zoom="actual">1:1</button>
+                        <button title="2x" data-zoom="2x">2×</button>
+                        <button title="4x" data-zoom="4x">4×</button>
+                        <button title="Show glyph borders" class="toggle-btn${state.showBorders ? ' active' : ''}" id="fnt-border-btn">□ Border</button>
+                        <button title="Export as PNG" id="export-fnt-png-btn">💾 PNG</button>
+                        ${rawData ? '<button title="Export original FNT" id="export-fnt-orig-btn">💾 FNT</button>' : ''}
+                    </div>
+                </div>
+                <div class="preview-body checkerboard" id="preview-fnt-body"></div>
+            </div>
+        `;
+        const body = container.querySelector('#preview-fnt-body');
+        let currentTransform = '';
+        let sheet = H3.FNT.renderSheet(font, borders);
+        body.appendChild(sheet);
+
+        $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const zoom = btn.dataset.zoom;
+                if (zoom === 'fit') { body.classList.remove('zoom-actual'); currentTransform = ''; sheet.style.transform = ''; }
+                else if (zoom === 'actual') { body.classList.add('zoom-actual'); currentTransform = ''; sheet.style.transform = ''; }
+                else if (zoom === '2x') { body.classList.add('zoom-actual'); currentTransform = 'scale(2)'; sheet.style.transform = 'scale(2)'; sheet.style.transformOrigin = 'center'; }
+                else if (zoom === '4x') { body.classList.add('zoom-actual'); currentTransform = 'scale(4)'; sheet.style.transform = 'scale(4)'; sheet.style.transformOrigin = 'center'; }
+            });
+        });
+
+        const borderBtn = container.querySelector('#fnt-border-btn');
+        if (borderBtn) {
+            borderBtn.addEventListener('click', () => {
+                borders = !borders;
+                state.showBorders = borders;
+                borderBtn.classList.toggle('active', borders);
+                const next = H3.FNT.renderSheet(font, borders);
+                if (currentTransform) { next.style.transform = currentTransform; next.style.transformOrigin = 'center'; }
+                sheet.replaceWith(next);
+                sheet = next;
+            });
+        }
+
+        const pngBtn = container.querySelector('#export-fnt-png-btn');
+        if (pngBtn) pngBtn.addEventListener('click', () => exportCanvasAsPng(sheet, filename.replace(/\.[^.]+$/, '_sheet.png')));
+        const origBtn = container.querySelector('#export-fnt-orig-btn');
+        if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
 
     function showTextPreview(container, data, filename) {

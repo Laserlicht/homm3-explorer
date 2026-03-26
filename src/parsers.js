@@ -1440,6 +1440,135 @@ class VidFile {
 
 
 // ============================================================
+// FNT Bitmap Font Parser
+//   byte[5]           = line height
+//   offset 32         = 256 × 12 bytes glyph metrics (leftOffset, width, rightOffset – each uint32LE)
+//   offset 32+3072    = 256 × 4 bytes pixel-data offsets (uint32LE each)
+//   offset 32+3072+1024 = raw pixel data (indexed: 0=transparent, 1=shadow, 2-255=white)
+// ============================================================
+const FNT = (() => {
+    const SYMBOLS    = 256;
+    const BASE_INDEX = 32;
+    const OFF_INDEX  = BASE_INDEX + SYMBOLS * 12;   // 3104
+    const DATA_INDEX = OFF_INDEX  + SYMBOLS * 4;    // 4128
+
+    function isFnt(data) {
+        return data instanceof Uint8Array && data.byteLength > DATA_INDEX;
+    }
+
+    function readFnt(data) {
+        const view   = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const height = data[5];
+        const glyphs = [];
+        for (let i = 0; i < SYMBOLS; i++) {
+            const mb          = BASE_INDEX + i * 12;
+            const leftOffset  = view.getUint32(mb + 0, true);
+            const width       = view.getUint32(mb + 4, true);
+            const rightOffset = view.getUint32(mb + 8, true);
+            const pixOff      = view.getUint32(OFF_INDEX + i * 4, true);
+            const pixCount    = height * width;
+            const pixels      = data.slice(DATA_INDEX + pixOff, DATA_INDEX + pixOff + pixCount);
+            glyphs.push({ charCode: i, leftOffset, width, rightOffset, height, pixels });
+        }
+        return { height, glyphs };
+    }
+
+    function renderSheet(font, showBorders = false) {
+        const { height, glyphs } = font;
+        const COLS     = 16;
+        const ROWS     = 16;
+        const PAD      = 3;
+        const LABEL_W  = 30;
+        const LABEL_H  = 16;
+        const maxGW    = Math.max(8, ...glyphs.map(g => g.width));
+        const CELL_W   = maxGW + PAD * 2;
+        const CELL_H   = height + PAD * 2;
+        const W        = LABEL_W + COLS * CELL_W;
+        const H        = LABEL_H + ROWS * CELL_H;
+
+        const canvas   = document.createElement('canvas');
+        canvas.width   = W;
+        canvas.height  = H;
+        const ctx      = canvas.getContext('2d');
+
+        // Fill only the label header row and label column — cells stay transparent
+        ctx.fillStyle = 'rgba(28,33,40,0.88)';
+        ctx.fillRect(0, 0, W, LABEL_H);
+        ctx.fillRect(0, LABEL_H, LABEL_W, H - LABEL_H);
+
+        // Column header labels
+        ctx.fillStyle = '#8b949e';
+        ctx.font      = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (let c = 0; c < COLS; c++) {
+            ctx.fillText(c.toString(16).toUpperCase(),
+                LABEL_W + c * CELL_W + CELL_W / 2,
+                LABEL_H / 2);
+        }
+
+        // Row header labels
+        ctx.textAlign = 'right';
+        for (let r = 0; r < ROWS; r++) {
+            ctx.fillText((r * 16).toString(16).toUpperCase().padStart(2, '0') + 'h',
+                LABEL_W - 3,
+                LABEL_H + r * CELL_H + CELL_H / 2);
+        }
+
+        // Grid lines
+        ctx.strokeStyle = '#30363d';
+        ctx.lineWidth   = 1;
+        for (let c = 0; c <= COLS; c++) {
+            const x = LABEL_W + c * CELL_W + 0.5;
+            ctx.beginPath(); ctx.moveTo(x, LABEL_H); ctx.lineTo(x, H); ctx.stroke();
+        }
+        for (let r = 0; r <= ROWS; r++) {
+            const y = LABEL_H + r * CELL_H + 0.5;
+            ctx.beginPath(); ctx.moveTo(LABEL_W, y); ctx.lineTo(W, y); ctx.stroke();
+        }
+        // Header separator – slightly brighter
+        ctx.strokeStyle = '#484f58';
+        ctx.beginPath(); ctx.moveTo(0, LABEL_H + 0.5); ctx.lineTo(W, LABEL_H + 0.5); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(LABEL_W + 0.5, 0); ctx.lineTo(LABEL_W + 0.5, H); ctx.stroke();
+
+        // Glyphs
+        for (let i = 0; i < SYMBOLS; i++) {
+            const g    = glyphs[i];
+            if (!g.width || !g.height || g.pixels.length === 0) continue;
+            const col  = i % COLS;
+            const row  = Math.floor(i / COLS);
+            const offX = LABEL_W + col * CELL_W + PAD + Math.floor((CELL_W - PAD * 2 - g.width) / 2);
+            const offY = LABEL_H + row * CELL_H + PAD;
+            const img  = ctx.createImageData(g.width, g.height);
+            const px   = g.pixels;
+            for (let p = 0; p < px.length; p++) {
+                const v  = px[p];
+                const b  = p * 4;
+                if (v === 0) {
+                    img.data[b + 3] = 0;
+                } else if (v === 1) {
+                    img.data[b] = 0; img.data[b + 1] = 0; img.data[b + 2] = 0; img.data[b + 3] = 200;
+                } else {
+                    img.data[b] = 255; img.data[b + 1] = 255; img.data[b + 2] = 255; img.data[b + 3] = 255;
+                }
+            }
+            ctx.putImageData(img, offX, offY);
+
+            // Per-glyph border (actual glyph bounding box)
+            if (showBorders) {
+                ctx.strokeStyle = '#ff4444';
+                ctx.lineWidth   = 1;
+                ctx.strokeRect(offX + 0.5, offY + 0.5, g.width - 1, g.height - 1);
+            }
+        }
+
+        return canvas;
+    }
+
+    return { isFnt, readFnt, renderSheet };
+})();
+
+// ============================================================
 // File type detection helpers
 // ============================================================
 function getFileExtension(filename) {
@@ -1483,6 +1612,7 @@ window.H3 = {
     SndFile,
     VidFile,
     DDS,
+    FNT,
     getFileExtension,
     getFileCategory,
     DataView2,
