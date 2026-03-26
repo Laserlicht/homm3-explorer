@@ -122,6 +122,7 @@
             case 'def': case 'd32': return '🎬';
             case 'txt': case 'xls': case 'csv': return '📄';
             case 'wav': case 'snd': return '🔊';
+            case 'smk': case 'bik': return '🎥';
             case 'msk': return '🎭';
             case 'fnt': return '🔤';
             case 'pal': return '🎨';
@@ -690,7 +691,17 @@
                 const data = await state.archive.getFile(file.name);
                 hideLoading();
                 if (!data) { showPreviewError(preview, 'File not found'); return; }
-                showBinaryPreview(preview, data, file.name);
+                const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+                // Detect video format by magic bytes
+                if (u8.length >= 4 && u8[0] === 0x53 && u8[1] === 0x4D && u8[2] === 0x4B) {
+                    // SMK file (SMK2 or SMK4)
+                    showSmkPreview(preview, u8, file.name);
+                } else if (u8.length >= 4 && u8[0] === 0x42 && u8[1] === 0x49 && u8[2] === 0x4B) {
+                    // BIK file
+                    showBikPreview(preview, u8, file.name);
+                } else {
+                    showBinaryPreview(preview, data, file.name);
+                }
             } else if (state.archiveType === 'pak') {
                 if (file.imageName && file.sheet) {
                     showLoading('Loading image...');
@@ -1312,6 +1323,192 @@
             }
         });
         obs.observe(container, { childList: true, subtree: true });
+    }
+
+    // ---- Video Preview (SMK / BIK) ----
+    async function showSmkPreview(container, data, filename) {
+        showLoading('Decoding video...', 0);
+        let decoded;
+        try {
+            decoded = await H3.SmackerDecoder.decode(data, p => showLoading('Decoding video...', p));
+        } catch (e) {
+            hideLoading();
+            console.error('SMK decode error:', e);
+            showBinaryPreview(container, data, filename);
+            toast('SMK decode failed: ' + e.message, 'error');
+            return;
+        }
+        hideLoading();
+
+        const { width, height, fps, frameDuration, nframes, indexedFrames, palettes, audio } = decoded;
+
+        // Build audio WAV blob
+        let audioUrl = null;
+        if (audio) {
+            const wavData = buildPcmWav(audio.samples, audio.sampleRate, audio.channels, audio.bitsPerSample);
+            const blob = new Blob([wavData], { type: 'audio/wav' });
+            audioUrl = URL.createObjectURL(blob);
+        }
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${width}×${height}</span>
+                        <span>${nframes} frames</span>
+                        <span>${fps.toFixed(1)} fps</span>
+                        <span>${decoded.isSMK4 ? 'SMK4' : 'SMK2'}</span>
+                        <span>${formatSize(data.length)}</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button id="video-export-btn" title="Export original file">💾</button>
+                    </div>
+                </div>
+                <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
+                    <canvas id="video-canvas" width="${width}" height="${height}" style="image-rendering:pixelated; max-width:100%; border:1px solid var(--border);"></canvas>
+                    <div class="video-controls">
+                        <button id="video-prev-btn" title="Previous frame">⏮</button>
+                        <button id="video-play-btn" title="Play/Pause">▶</button>
+                        <button id="video-next-btn" title="Next frame">⏭</button>
+                        <input type="range" id="video-slider" min="0" max="${nframes - 1}" value="0" style="flex:1;">
+                        <span id="video-frame-label" style="min-width:80px; text-align:right; font-size:12px; color:var(--text-muted);">1 / ${nframes}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const canvas = container.querySelector('#video-canvas');
+        const ctx2d = canvas.getContext('2d');
+        const playBtn = container.querySelector('#video-play-btn');
+        const prevBtn = container.querySelector('#video-prev-btn');
+        const nextBtn = container.querySelector('#video-next-btn');
+        const slider = container.querySelector('#video-slider');
+        const frameLabel = container.querySelector('#video-frame-label');
+        const exportBtn = container.querySelector('#video-export-btn');
+
+        let currentFrame = 0;
+        let playing = false;
+        let timer = null;
+        let audioEl = null;
+
+        if (audioUrl) {
+            audioEl = new Audio(audioUrl);
+            audioEl.volume = 1;
+        }
+
+        function renderFrame(idx) {
+            if (idx < 0 || idx >= nframes) return;
+            currentFrame = idx;
+            const indexed = indexedFrames[idx];
+            const pal = palettes[idx];
+            const imgData = ctx2d.createImageData(width, height);
+            const rgba = imgData.data;
+            for (let i = 0; i < width * height; i++) {
+                const c = indexed[i];
+                rgba[i * 4] = pal[c * 3];
+                rgba[i * 4 + 1] = pal[c * 3 + 1];
+                rgba[i * 4 + 2] = pal[c * 3 + 2];
+                rgba[i * 4 + 3] = 255;
+            }
+            ctx2d.putImageData(imgData, 0, 0);
+            slider.value = idx;
+            frameLabel.textContent = `${idx + 1} / ${nframes}`;
+        }
+
+        function play() {
+            if (playing) return;
+            playing = true;
+            playBtn.textContent = '⏸';
+            if (audioEl) {
+                audioEl.currentTime = currentFrame * frameDuration / 1000;
+                audioEl.play().catch(() => {});
+            }
+            const startTime = performance.now() - currentFrame * frameDuration;
+            function tick() {
+                if (!playing) return;
+                const elapsed = performance.now() - startTime;
+                const targetFrame = Math.floor(elapsed / frameDuration);
+                if (targetFrame >= nframes) {
+                    stop();
+                    renderFrame(0);
+                    return;
+                }
+                if (targetFrame !== currentFrame) {
+                    renderFrame(targetFrame);
+                }
+                timer = requestAnimationFrame(tick);
+            }
+            timer = requestAnimationFrame(tick);
+        }
+
+        function stop() {
+            playing = false;
+            playBtn.textContent = '▶';
+            if (timer) { cancelAnimationFrame(timer); timer = null; }
+            if (audioEl) audioEl.pause();
+        }
+
+        playBtn.addEventListener('click', () => { playing ? stop() : play(); });
+        prevBtn.addEventListener('click', () => { stop(); renderFrame(Math.max(0, currentFrame - 1)); });
+        nextBtn.addEventListener('click', () => { stop(); renderFrame(Math.min(nframes - 1, currentFrame + 1)); });
+        slider.addEventListener('input', () => { stop(); renderFrame(parseInt(slider.value)); });
+        exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+
+        renderFrame(0);
+
+        // Cleanup on preview change
+        const obs = new MutationObserver(() => {
+            if (!container.querySelector('#video-canvas')) {
+                stop();
+                if (audioUrl) URL.revokeObjectURL(audioUrl);
+                obs.disconnect();
+            }
+        });
+        obs.observe(container, { childList: true, subtree: true });
+    }
+
+    function showBikPreview(container, data, filename) {
+        let info;
+        try {
+            info = H3.BinkHeader.parse(data instanceof Uint8Array ? data : new Uint8Array(data));
+        } catch (e) {
+            showBinaryPreview(container, data, filename);
+            return;
+        }
+        const audioDesc = info.audioTracks.length > 0
+            ? info.audioTracks.map((t, i) => `Track ${i + 1}: ${t.sampleRate}Hz ${t.stereo ? 'Stereo' : 'Mono'} (${t.useDCT ? 'DCT' : 'RDFT'})`).join(', ')
+            : 'No audio';
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${info.width}×${info.height}</span>
+                        <span>${info.nframes} frames</span>
+                        <span>${info.fps.toFixed(1)} fps</span>
+                        <span>Bink Video</span>
+                        <span>${formatSize(data.length)}</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button id="bik-export-btn" title="Export original file">💾</button>
+                    </div>
+                </div>
+                <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;">
+                    <div style="font-size:64px;">🎥</div>
+                    <div style="text-align:center; color:var(--text-muted); font-size:13px;">
+                        <p><strong>Bink Video</strong> — playback not supported in browser</p>
+                        <p>${info.width}×${info.height} • ${info.nframes} frames • ${info.fps.toFixed(1)} fps</p>
+                        <p style="margin-top:8px;">${escapeHtml(audioDesc)}</p>
+                        <p style="margin-top:8px;">Use the export button to save and play with VLC or ffplay.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        const exportBtn = container.querySelector('#bik-export-btn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+        }
     }
 
     // ---- DEF Animation Viewer ----
