@@ -127,6 +127,8 @@
             case 'pal': return '🎨';
             case 'h3m': return '🗺️';
             case 'h3c': return '⚔️';
+            case 'pak-sheet': return '🗂️';
+            case 'pak': return '🖼️';
             default: return '📁';
         }
     }
@@ -426,6 +428,93 @@
             container.style.setProperty('--icon-size', state.iconSize + 'px');
         }
 
+        // PAK tree view: group sprites under their sheet when in list mode and no ext filter
+        const usePakTree = state.archiveType === 'pak' && !isGrid && !extFilterVal;
+
+        if (usePakTree) {
+            // Group files by sheet
+            const sheets = new Map(); // sheetName -> {sheetFile, sprites[]}
+            for (const file of filtered) {
+                if (file.category === 'sheet') {
+                    if (!sheets.has(file.sheet)) sheets.set(file.sheet, { sheetFile: file, sprites: [] });
+                    else sheets.get(file.sheet).sheetFile = file;
+                } else if (file.sheet) {
+                    if (!sheets.has(file.sheet)) sheets.set(file.sheet, { sheetFile: null, sprites: [] });
+                    sheets.get(file.sheet).sprites.push(file);
+                }
+            }
+            // Also include sheets that only matched via sprite search
+            for (const file of filtered) {
+                if (file.category !== 'sheet' && file.sheet && sheets.has(file.sheet) && !sheets.get(file.sheet).sheetFile) {
+                    const sf = state.fileList.find(f => f.category === 'sheet' && f.sheet === file.sheet);
+                    if (sf) sheets.get(file.sheet).sheetFile = sf;
+                }
+            }
+
+            for (const [sheetName, { sheetFile, sprites }] of sheets) {
+                // Sheet header (collapsible)
+                const group = document.createElement('div');
+                group.className = 'pak-tree-group';
+
+                const header = document.createElement('div');
+                header.className = 'file-item pak-tree-header';
+                if (sheetFile) header.dataset.filename = sheetFile.name;
+                const isExpanded = !filterLower; // auto-collapse when not searching, expand when searching
+                header.innerHTML = `
+                    <span class="pak-tree-toggle">${sprites.length > 0 ? (filterLower ? '▼' : '▶') : ' '}</span>
+                    <span class="file-item-icon">${getFileIcon('pak-sheet')}</span>
+                    <span class="file-item-name">${escapeHtml(sheetName)}</span>
+                    <span class="file-item-ext ext-pak-sheet">${sprites.length} sprites</span>
+                `;
+
+                const spriteContainer = document.createElement('div');
+                spriteContainer.className = 'pak-tree-children';
+                spriteContainer.style.display = filterLower ? '' : 'none';
+
+                if (sprites.length > 0) {
+                    header.addEventListener('click', (e) => {
+                        const toggle = header.querySelector('.pak-tree-toggle');
+                        const isOpen = spriteContainer.style.display !== 'none';
+                        spriteContainer.style.display = isOpen ? 'none' : '';
+                        toggle.textContent = isOpen ? '▶' : '▼';
+                        if (sheetFile) {
+                            $$('.file-item', els.fileList).forEach(el => el.classList.remove('selected'));
+                            header.classList.add('selected');
+                            selectFile(sheetFile);
+                        }
+                    });
+                } else if (sheetFile) {
+                    header.addEventListener('click', () => {
+                        $$('.file-item', els.fileList).forEach(el => el.classList.remove('selected'));
+                        header.classList.add('selected');
+                        selectFile(sheetFile);
+                    });
+                }
+
+                for (const sprite of sprites) {
+                    const item = document.createElement('div');
+                    item.className = 'file-item pak-tree-child';
+                    item.dataset.filename = sprite.name;
+                    item.innerHTML = `
+                        <span class="file-item-icon">${getFileIcon('pak')}</span>
+                        <span class="file-item-name">${escapeHtml(sprite.imageName || sprite.name)}</span>
+                    `;
+                    item.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        $$('.file-item', els.fileList).forEach(el => el.classList.remove('selected'));
+                        item.classList.add('selected');
+                        selectFile(sprite);
+                    });
+                    spriteContainer.appendChild(item);
+                }
+
+                group.appendChild(header);
+                group.appendChild(spriteContainer);
+                container.appendChild(group);
+            }
+            return;
+        }
+
         for (const file of filtered) {
             const item = document.createElement('div');
             item.className = 'file-item';
@@ -606,18 +695,37 @@
                 if (file.imageName && file.sheet) {
                     showLoading('Loading image...');
                     const result = await state.archive.getImage(file.sheet, file.imageName);
+                    const rawChunks = state.archive.getRawChunks(file.sheet);
                     hideLoading();
                     if (result) {
                         showImagePreview(preview, result.image, file.name, `${result.image.width}×${result.image.height}`, 'pak');
+                        // Add raw DDS export for sprite's sheet chunk
+                        const cfg = state.archive.getSheetConfig(file.sheet);
+                        if (cfg && rawChunks) {
+                            const entry = Object.entries(cfg).find(([k]) => k.toUpperCase() === file.imageName.toUpperCase());
+                            if (entry) {
+                                const chunkIdx = entry[1].no;
+                                if (rawChunks[chunkIdx]) {
+                                    addRawExportButton(preview, rawChunks[chunkIdx], `${file.sheet}_sheet${chunkIdx}.dds`);
+                                }
+                            }
+                        }
                     } else {
                         showPreviewError(preview, 'Failed to load PAK image');
                     }
                 } else if (file.category === 'sheet') {
                     showLoading('Loading sheet...');
                     const sheets = await state.archive.getSheets(file.sheet);
+                    const rawChunks = state.archive.getRawChunks(file.sheet);
                     hideLoading();
                     if (sheets && sheets.length > 0) {
                         showImagePreview(preview, sheets[0], file.name, `${sheets[0].width}×${sheets[0].height}`, 'pak-sheet');
+                        if (rawChunks) {
+                            addRawExportButton(preview, rawChunks[0], `${file.sheet}_sheet0.dds`);
+                            if (rawChunks.length > 1) {
+                                addRawExportAllButton(preview, rawChunks, file.sheet);
+                            }
+                        }
                     }
                 }
             }
@@ -698,6 +806,30 @@
         // Export original
         const origBtn = container.querySelector('#export-orig-btn');
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+    }
+
+    function addRawExportButton(container, rawData, filename) {
+        const toolbar = container.querySelector('.preview-toolbar');
+        if (!toolbar) return;
+        const btn = document.createElement('button');
+        btn.title = 'Export raw DDS';
+        btn.textContent = '💾 DDS';
+        btn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+        toolbar.appendChild(btn);
+    }
+
+    function addRawExportAllButton(container, chunks, sheetName) {
+        const toolbar = container.querySelector('.preview-toolbar');
+        if (!toolbar) return;
+        const btn = document.createElement('button');
+        btn.title = 'Export all DDS sheets';
+        btn.textContent = '💾 All DDS';
+        btn.addEventListener('click', () => {
+            for (let i = 0; i < chunks.length; i++) {
+                exportBlob(new Blob([chunks[i]]), `${sheetName}_sheet${i}.dds`);
+            }
+        });
+        toolbar.appendChild(btn);
     }
 
     function showDefPreview(container, def, filename) {
@@ -873,18 +1005,16 @@
             data[8] === 0x57 && data[9] === 0x41 && data[10] === 0x56 && data[11] === 0x45;
     }
 
-    function wrapRawPcmAsWav(rawPcm, sampleRate, channels, bitsPerSample) {
-        const dataSize = rawPcm.length;
+    function buildPcmWav(pcmData, sampleRate, channels, bitsPerSample) {
+        const dataSize = pcmData.byteLength;
         const blockAlign = channels * bitsPerSample / 8;
         const byteRate = sampleRate * blockAlign;
         const buffer = new ArrayBuffer(44 + dataSize);
         const view = new DataView(buffer);
         const out = new Uint8Array(buffer);
-        // RIFF header
         out[0]=0x52; out[1]=0x49; out[2]=0x46; out[3]=0x46;
         view.setUint32(4, 36 + dataSize, true);
         out[8]=0x57; out[9]=0x41; out[10]=0x56; out[11]=0x45;
-        // fmt chunk
         out[12]=0x66; out[13]=0x6D; out[14]=0x74; out[15]=0x20;
         view.setUint32(16, 16, true);
         view.setUint16(20, 1, true); // PCM
@@ -893,22 +1023,144 @@
         view.setUint32(28, byteRate, true);
         view.setUint16(32, blockAlign, true);
         view.setUint16(34, bitsPerSample, true);
-        // data chunk
         out[36]=0x64; out[37]=0x61; out[38]=0x74; out[39]=0x61;
         view.setUint32(40, dataSize, true);
-        out.set(rawPcm instanceof Uint8Array ? rawPcm : new Uint8Array(rawPcm), 44);
+        out.set(new Uint8Array(pcmData instanceof ArrayBuffer ? pcmData : pcmData.buffer.slice(pcmData.byteOffset, pcmData.byteOffset + pcmData.byteLength)), 44);
         return out;
     }
 
-    function showAudioPreview(container, data, filename) {
-        const isWav = isWavData(data);
-        let audioData;
-        if (isWav) {
-            audioData = data;
-        } else {
-            // Wrap raw PCM as WAV (HoMM3 default: 22050 Hz, mono, 8-bit unsigned)
-            audioData = wrapRawPcmAsWav(data, 22050, 1, 8);
+    // IMA ADPCM decoder for HoMM3 SND files (WAV format 17)
+    function decodeImaAdpcmWav(wavData) {
+        const v = new DataView(wavData.buffer, wavData.byteOffset, wavData.byteLength);
+        // Parse WAV header to find fmt and data chunks
+        let pos = 12; // skip RIFF + size + WAVE
+        let audioFormat = 0, channels = 0, sampleRate = 0, blockAlign = 0;
+        let dataOffset = 0, dataSize = 0, numSamples = 0;
+        while (pos < wavData.length - 8) {
+            const chunkId = String.fromCharCode(wavData[pos], wavData[pos+1], wavData[pos+2], wavData[pos+3]);
+            const chunkSize = v.getUint32(pos + 4, true);
+            if (chunkId === 'fmt ') {
+                audioFormat = v.getUint16(pos + 8, true);
+                channels = v.getUint16(pos + 10, true);
+                sampleRate = v.getUint32(pos + 12, true);
+                blockAlign = v.getUint16(pos + 20, true);
+            } else if (chunkId === 'fact') {
+                numSamples = v.getUint32(pos + 8, true);
+            } else if (chunkId === 'data') {
+                dataOffset = pos + 8;
+                dataSize = chunkSize;
+            }
+            pos += 8 + chunkSize;
+            if (chunkSize % 2 !== 0) pos++; // word-align
         }
+        if (audioFormat !== 0x11) return null; // not IMA ADPCM
+
+        // IMA ADPCM step table
+        const stepTable = [
+            7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,
+            118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,
+            963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,
+            5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,
+            24623,27086,29794,32767
+        ];
+        const indexTable = [-1,-1,-1,-1,2,4,6,8];
+
+        const samplesPerBlock = (blockAlign - 4 * channels) * 2 / channels + 1;
+        const totalBlocks = Math.ceil(dataSize / blockAlign);
+        if (!numSamples) numSamples = totalBlocks * samplesPerBlock;
+
+        const pcm = new Int16Array(numSamples * channels);
+        let outIdx = 0;
+
+        for (let b = 0; b < totalBlocks && outIdx < pcm.length; b++) {
+            const blockStart = dataOffset + b * blockAlign;
+            const blockBytes = Math.min(blockAlign, dataSize - b * blockAlign);
+            if (blockBytes < 4 * channels) break;
+
+            const predictors = [], indices = [];
+            for (let ch = 0; ch < channels; ch++) {
+                const hOff = blockStart + ch * 4;
+                predictors.push(v.getInt16(hOff, true));
+                indices.push(Math.min(Math.max(wavData[hOff + 2], 0), 88));
+            }
+            for (let ch = 0; ch < channels; ch++) {
+                if (outIdx < pcm.length) pcm[outIdx++] = predictors[ch];
+            }
+
+            const dataStart = blockStart + 4 * channels;
+            const nibbleBytes = blockBytes - 4 * channels;
+
+            function decodeNibble(nibble, ch) {
+                const step = stepTable[indices[ch]];
+                let diff = step >> 3;
+                if (nibble & 1) diff += step >> 2;
+                if (nibble & 2) diff += step >> 1;
+                if (nibble & 4) diff += step;
+                if (nibble & 8) diff = -diff;
+                predictors[ch] = Math.max(-32768, Math.min(32767, predictors[ch] + diff));
+                indices[ch] = Math.max(0, Math.min(88, indices[ch] + indexTable[nibble & 7]));
+                return predictors[ch];
+            }
+
+            if (channels === 1) {
+                for (let i = 0; i < nibbleBytes && outIdx < pcm.length; i++) {
+                    const byte = wavData[dataStart + i];
+                    pcm[outIdx++] = decodeNibble(byte & 0x0F, 0);
+                    if (outIdx < pcm.length) pcm[outIdx++] = decodeNibble((byte >> 4) & 0x0F, 0);
+                }
+            } else {
+                let byteOff = 0;
+                const blockSamples = (nibbleBytes * 2) / channels;
+                for (let s = 0; s < blockSamples; s += 8) {
+                    for (let ch = 0; ch < channels; ch++) {
+                        for (let n = 0; n < 8 && (s + n) < blockSamples; n++) {
+                            const bPos = dataStart + byteOff + Math.floor(n / 2);
+                            if (bPos >= wavData.length) break;
+                            const byte = wavData[bPos];
+                            const nibble = (n % 2 === 0) ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
+                            const sample = decodeNibble(nibble, ch);
+                            const outPos = (b * samplesPerBlock + 1 + s + n) * channels + ch;
+                            if (outPos < pcm.length) pcm[outPos] = sample;
+                        }
+                        byteOff += 4;
+                    }
+                }
+                outIdx = Math.min((b + 1) * samplesPerBlock * channels, pcm.length);
+            }
+        }
+
+        return buildPcmWav(pcm.subarray(0, Math.min(outIdx, numSamples * channels)), sampleRate, channels, 16);
+    }
+
+    function ensurePlayableWav(data) {
+        if (!isWavData(data)) {
+            // Raw PCM fallback
+            return buildPcmWav(data, 22050, 1, 8);
+        }
+        // Check WAV audio format
+        const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        let pos = 12;
+        while (pos < data.length - 8) {
+            const id = String.fromCharCode(data[pos], data[pos+1], data[pos+2], data[pos+3]);
+            const sz = v.getUint32(pos + 4, true);
+            if (id === 'fmt ') {
+                const fmt = v.getUint16(pos + 8, true);
+                if (fmt === 0x11) {
+                    // IMA ADPCM - decode to PCM
+                    return decodeImaAdpcmWav(data);
+                }
+                // PCM (1) or other browser-supported format - pass through
+                return data;
+            }
+            pos += 8 + sz;
+            if (sz % 2 !== 0) pos++;
+        }
+        return data; // couldn't parse, pass through
+    }
+
+    function showAudioPreview(container, data, filename) {
+        const audioData = ensurePlayableWav(data instanceof Uint8Array ? data : new Uint8Array(data));
+        const decoded = audioData !== data;
         const blob = new Blob([audioData], { type: 'audio/wav' });
         const url = URL.createObjectURL(blob);
 
@@ -918,7 +1170,7 @@
                     <span class="preview-filename">${escapeHtml(filename)}</span>
                     <div class="preview-meta">
                         <span>${formatSize(data.length)}</span>
-                        <span>${isWav ? 'WAV Audio' : 'Raw Audio (wrapped as WAV)'}</span>
+                        <span>${decoded ? 'IMA ADPCM → PCM' : 'WAV Audio'}</span>
                     </div>
                     <div class="preview-toolbar">
                         <button id="audio-export-btn" title="Export file">💾</button>
@@ -948,7 +1200,7 @@
         const exportBtn = container.querySelector('#audio-export-btn');
         if (exportBtn) {
             const exportName = !filename.includes('.') ? filename + '.wav' : filename;
-            exportBtn.addEventListener('click', () => exportBlob(new Blob([isWav ? data : audioData]), exportName));
+            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), exportName));
         }
 
         // Clean up blob URL when preview changes

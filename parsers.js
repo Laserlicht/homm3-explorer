@@ -1266,6 +1266,15 @@ class PakFile {
         return null;
     }
 
+    getRawChunks(name) {
+        for (const [k, v] of Object.entries(this.data)) {
+            if (k.toUpperCase() === name.toUpperCase()) {
+                return v.chunks;
+            }
+        }
+        return null;
+    }
+
     async getImage(sheetname, imagename) {
         const cfg = this.getSheetConfig(sheetname);
         const sheets = await this.getSheets(sheetname);

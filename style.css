@@ -524,6 +524,33 @@ body {
     border: 1px solid var(--border);
 }
 
+/* PAK Tree View */
+.pak-tree-group { }
+.pak-tree-header {
+    font-weight: 500;
+}
+.pak-tree-header .pak-tree-toggle {
+    width: 14px;
+    font-size: 10px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    user-select: none;
+}
+.pak-tree-header .file-item-ext {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    padding: 0;
+}
+.pak-tree-children { }
+.pak-tree-child {
+    padding-left: 42px !important;
+}
+.pak-tree-child .file-item-icon {
+    font-size: 12px;
+}
+
 /* Grid Item */
 .grid-view .file-item {
     flex-direction: column;
