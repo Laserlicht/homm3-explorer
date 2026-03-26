@@ -2925,6 +2925,12 @@
             });
         }
 
+        // Sync UI with initial state
+        $$('.view-btn').forEach(b => b.classList.toggle('active', b.dataset.view === state.viewMode));
+        els.iconSizeControl.style.display = state.viewMode === 'grid' ? 'flex' : 'none';
+        const animThumbToggleInit = $('#def-anim-thumb-toggle');
+        if (animThumbToggleInit) animThumbToggleInit.classList.toggle('active', state.defAnimThumbs);
+
         // Start at welcome
         setMode('explorer');
 
