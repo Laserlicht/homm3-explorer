@@ -1474,3 +1474,12 @@ canvas.img-border {
 .about-table tr:last-child td {
     border-bottom: none;
 }
+
+.about-disclaimer {
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
