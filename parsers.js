@@ -900,6 +900,205 @@ class DefFile {
 }
 
 // ============================================================
+// DDS Texture Decoder (DXT1/DXT3/DXT5 + uncompressed)
+// ============================================================
+const DDS = {
+    decode(data) {
+        if (data.length < 128) return null;
+        const r = new DataView2(data);
+        const magic = r.readUint32LE();
+        if (magic !== 0x20534444) return null; // "DDS "
+
+        r.readUint32LE(); // headerSize (124)
+        r.readUint32LE(); // flags
+        const height = r.readUint32LE();
+        const width = r.readUint32LE();
+        r.readUint32LE(); // pitchOrLinearSize
+        r.readUint32LE(); // depth
+        r.readUint32LE(); // mipMapCount
+        r.readBytes(44);  // reserved[11]
+
+        // Pixel format
+        r.readUint32LE(); // pfSize (32)
+        const pfFlags = r.readUint32LE();
+        const fourCC = r.readUint32LE();
+        const rgbBitCount = r.readUint32LE();
+        const rMask = r.readUint32LE();
+        const gMask = r.readUint32LE();
+        const bMask = r.readUint32LE();
+        const aMask = r.readUint32LE();
+        // skip caps (20 bytes)
+
+        const pixelData = data.subarray ? data.subarray(128) : new Uint8Array(data.buffer, data.byteOffset + 128);
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        const imgData = ctx.createImageData(width, height);
+        const out = imgData.data;
+
+        if (pfFlags & 0x4) { // DDPF_FOURCC
+            if (fourCC === 0x31545844) this._decodeDXT1(pixelData, width, height, out);
+            else if (fourCC === 0x33545844) this._decodeDXT3(pixelData, width, height, out);
+            else if (fourCC === 0x35545844) this._decodeDXT5(pixelData, width, height, out);
+            else { console.warn('Unsupported DDS fourCC:', fourCC); return null; }
+        } else if (pfFlags & 0x40) { // DDPF_RGB
+            this._decodeRGB(pixelData, width, height, rgbBitCount, rMask, gMask, bMask, aMask, !!(pfFlags & 0x1), out);
+        } else {
+            console.warn('Unsupported DDS pixel format flags:', pfFlags);
+            return null;
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+        return canvas;
+    },
+
+    _rgb565(c) {
+        return [
+            ((c >> 11) & 0x1F) * 255 / 31 | 0,
+            ((c >> 5) & 0x3F) * 255 / 63 | 0,
+            (c & 0x1F) * 255 / 31 | 0
+        ];
+    },
+
+    _colorTable(c0, c1, hasAlpha) {
+        const [r0, g0, b0] = this._rgb565(c0);
+        const [r1, g1, b1] = this._rgb565(c1);
+        // 4 colors × RGBA
+        const t = new Uint8Array(16);
+        t[0] = r0; t[1] = g0; t[2] = b0; t[3] = 255;
+        t[4] = r1; t[5] = g1; t[6] = b1; t[7] = 255;
+        if (c0 > c1 || !hasAlpha) {
+            t[8]  = (2*r0 + r1 + 1) / 3 | 0; t[9]  = (2*g0 + g1 + 1) / 3 | 0; t[10] = (2*b0 + b1 + 1) / 3 | 0; t[11] = 255;
+            t[12] = (r0 + 2*r1 + 1) / 3 | 0; t[13] = (g0 + 2*g1 + 1) / 3 | 0; t[14] = (b0 + 2*b1 + 1) / 3 | 0; t[15] = 255;
+        } else {
+            t[8]  = (r0 + r1 + 1) / 2 | 0; t[9]  = (g0 + g1 + 1) / 2 | 0; t[10] = (b0 + b1 + 1) / 2 | 0; t[11] = 255;
+            t[12] = 0; t[13] = 0; t[14] = 0; t[15] = 0;
+        }
+        return t;
+    },
+
+    _decodeDXT1(data, w, h, out) {
+        const bx = Math.ceil(w / 4), by = Math.ceil(h / 4);
+        let off = 0;
+        for (let y = 0; y < by; y++) {
+            for (let x = 0; x < bx; x++) {
+                const c0 = data[off] | (data[off+1] << 8);
+                const c1 = data[off+2] | (data[off+3] << 8);
+                const t = this._colorTable(c0, c1, true);
+                for (let r = 0; r < 4; r++) {
+                    const py = y*4+r; if (py >= h) break;
+                    const bits = data[off+4+r];
+                    for (let c = 0; c < 4; c++) {
+                        const px = x*4+c; if (px >= w) continue;
+                        const ci = ((bits >> (c*2)) & 3) * 4;
+                        const di = (py*w+px)*4;
+                        out[di]=t[ci]; out[di+1]=t[ci+1]; out[di+2]=t[ci+2]; out[di+3]=t[ci+3];
+                    }
+                }
+                off += 8;
+            }
+        }
+    },
+
+    _decodeDXT3(data, w, h, out) {
+        const bx = Math.ceil(w / 4), by = Math.ceil(h / 4);
+        let off = 0;
+        for (let y = 0; y < by; y++) {
+            for (let x = 0; x < bx; x++) {
+                // Color block at off+8
+                const c0 = data[off+8] | (data[off+9] << 8);
+                const c1 = data[off+10] | (data[off+11] << 8);
+                const t = this._colorTable(c0, c1, false);
+                for (let r = 0; r < 4; r++) {
+                    const py = y*4+r; if (py >= h) break;
+                    const bits = data[off+12+r];
+                    const alphaBits = data[off+r*2] | (data[off+r*2+1] << 8);
+                    for (let c = 0; c < 4; c++) {
+                        const px = x*4+c; if (px >= w) continue;
+                        const ci = ((bits >> (c*2)) & 3) * 4;
+                        const di = (py*w+px)*4;
+                        out[di]=t[ci]; out[di+1]=t[ci+1]; out[di+2]=t[ci+2];
+                        const a4 = (alphaBits >> (c*4)) & 0xF;
+                        out[di+3] = a4 | (a4 << 4);
+                    }
+                }
+                off += 16;
+            }
+        }
+    },
+
+    _decodeDXT5(data, w, h, out) {
+        const bx = Math.ceil(w / 4), by = Math.ceil(h / 4);
+        let off = 0;
+        for (let y = 0; y < by; y++) {
+            for (let x = 0; x < bx; x++) {
+                // Alpha
+                const a0 = data[off], a1 = data[off+1];
+                const at = new Uint8Array(8);
+                at[0] = a0; at[1] = a1;
+                if (a0 > a1) {
+                    at[2]=(6*a0+a1+3)/7|0; at[3]=(5*a0+2*a1+3)/7|0;
+                    at[4]=(4*a0+3*a1+3)/7|0; at[5]=(3*a0+4*a1+3)/7|0;
+                    at[6]=(2*a0+5*a1+3)/7|0; at[7]=(a0+6*a1+3)/7|0;
+                } else {
+                    at[2]=(4*a0+a1+2)/5|0; at[3]=(3*a0+2*a1+2)/5|0;
+                    at[4]=(2*a0+3*a1+2)/5|0; at[5]=(a0+4*a1+2)/5|0;
+                    at[6]=0; at[7]=255;
+                }
+
+                // Color block at off+8
+                const c0 = data[off+8] | (data[off+9] << 8);
+                const c1 = data[off+10] | (data[off+11] << 8);
+                const t = this._colorTable(c0, c1, false);
+                for (let r = 0; r < 4; r++) {
+                    const py = y*4+r; if (py >= h) break;
+                    const bits = data[off+12+r];
+                    for (let c = 0; c < 4; c++) {
+                        const px = x*4+c; if (px >= w) continue;
+                        const ci = ((bits >> (c*2)) & 3) * 4;
+                        const di = (py*w+px)*4;
+                        out[di]=t[ci]; out[di+1]=t[ci+1]; out[di+2]=t[ci+2];
+                        // 3-bit alpha index from 48-bit field
+                        const ai = r*4+c;
+                        const bitPos = ai * 3;
+                        const byteIdx = bitPos >> 3;
+                        const bitIdx = bitPos & 7;
+                        const ab0 = data[off+2+byteIdx];
+                        const ab1 = (byteIdx+1 < 6) ? data[off+2+byteIdx+1] : 0;
+                        out[di+3] = at[((ab0 | (ab1 << 8)) >> bitIdx) & 7];
+                    }
+                }
+                off += 16;
+            }
+        }
+    },
+
+    _decodeRGB(data, w, h, bpp, rM, gM, bM, aM, hasAlpha, out) {
+        const bytesPerPixel = bpp / 8;
+        const rShift = this._maskShift(rM), rBits = this._maskBits(rM);
+        const gShift = this._maskShift(gM), gBits = this._maskBits(gM);
+        const bShift = this._maskShift(bM), bBits = this._maskBits(bM);
+        const aShift = hasAlpha ? this._maskShift(aM) : 0;
+        const aBits = hasAlpha ? this._maskBits(aM) : 0;
+        let off = 0;
+        for (let i = 0; i < w * h; i++) {
+            let px = 0;
+            for (let b = 0; b < bytesPerPixel; b++) px |= data[off+b] << (b*8);
+            off += bytesPerPixel;
+            const di = i * 4;
+            out[di]   = rBits ? ((px >> rShift) & ((1 << rBits) - 1)) * 255 / ((1 << rBits) - 1) | 0 : 0;
+            out[di+1] = gBits ? ((px >> gShift) & ((1 << gBits) - 1)) * 255 / ((1 << gBits) - 1) | 0 : 0;
+            out[di+2] = bBits ? ((px >> bShift) & ((1 << bBits) - 1)) * 255 / ((1 << bBits) - 1) | 0 : 0;
+            out[di+3] = hasAlpha && aBits ? ((px >> aShift) & ((1 << aBits) - 1)) * 255 / ((1 << aBits) - 1) | 0 : 255;
+        }
+    },
+
+    _maskShift(m) { if (!m) return 0; let s = 0; while ((m & 1) === 0) { m >>= 1; s++; } return s; },
+    _maskBits(m) { if (!m) return 0; while ((m & 1) === 0) m >>= 1; let b = 0; while (m & 1) { m >>= 1; b++; } return b; }
+};
+
+// ============================================================
 // PAK File Parser
 // ============================================================
 class PakFile {
@@ -952,51 +1151,27 @@ class PakFile {
             let imageConfig = '';
             for (const b of configBytes) imageConfig += String.fromCharCode(b);
 
+            // Read and decompress each chunk individually
             let currentOffset = offset + dummySize;
-
-            let rawData = new Uint8Array(0);
-            let dataCompressed = new Uint8Array(0);
+            const resultChunks = [];
 
             for (let j = 0; j < chunks; j++) {
                 r.seek(currentOffset);
                 if (chunkZsizeArr[j] === chunkSizeArr[j]) {
-                    const chunk = r.readBytes(chunkSizeArr[j]);
-                    const newArr = new Uint8Array(rawData.length + chunk.length);
-                    newArr.set(rawData);
-                    newArr.set(chunk, rawData.length);
-                    rawData = newArr;
+                    // Uncompressed chunk
+                    resultChunks.push(r.readBytes(chunkSizeArr[j]));
                 } else {
-                    const chunk = r.readBytes(zsize);
-                    const newArr = new Uint8Array(dataCompressed.length + chunk.length);
-                    newArr.set(dataCompressed);
-                    newArr.set(chunk, dataCompressed.length);
-                    dataCompressed = newArr;
-                }
-                currentOffset += chunkZsizeArr[j];
-            }
-
-            let resultChunks;
-
-            if (dataCompressed.length > 0) {
-                // Decompress zlib chunks
-                const decompressedChunks = [];
-                let toDecompress = dataCompressed;
-                while (toDecompress.length > 0) {
+                    // Compressed chunk - read exact compressed size
+                    const compressed = r.readBytes(chunkZsizeArr[j]);
                     try {
-                        const decompressed = await zlibDecompress(toDecompress);
-                        decompressedChunks.push(decompressed);
-                        break;
+                        const decompressed = await zlibDecompress(compressed);
+                        resultChunks.push(decompressed);
                     } catch (e) {
-                        break;
+                        console.warn('PAK chunk decompression failed:', j, e);
+                        resultChunks.push(compressed);
                     }
                 }
-                if (rawData.length < decompressedChunks.reduce((s, c) => s + c.length, 0)) {
-                    resultChunks = decompressedChunks;
-                } else {
-                    resultChunks = [rawData];
-                }
-            } else {
-                resultChunks = [rawData];
+                currentOffset += chunkZsizeArr[j];
             }
 
             this.data[name] = { config: imageConfig, chunks: resultChunks };
@@ -1010,16 +1185,26 @@ class PakFile {
     async getSheets(name) {
         for (const [k, v] of Object.entries(this.data)) {
             if (k.toUpperCase() === name.toUpperCase()) {
-                // Return as blob URLs for images
                 const sheets = [];
                 for (const chunk of v.chunks) {
-                    const blob = new Blob([chunk]);
-                    const img = await createImageBitmap(blob);
-                    const canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
-                    canvas.getContext('2d').drawImage(img, 0, 0);
-                    sheets.push(canvas);
+                    // Try DDS decode first (HD PAK files contain DDS textures)
+                    const ddsCanvas = DDS.decode(chunk);
+                    if (ddsCanvas) {
+                        sheets.push(ddsCanvas);
+                        continue;
+                    }
+                    // Fallback: try as browser-native image (PNG/BMP/etc.)
+                    try {
+                        const blob = new Blob([chunk]);
+                        const img = await createImageBitmap(blob);
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        canvas.getContext('2d').drawImage(img, 0, 0);
+                        sheets.push(canvas);
+                    } catch (e) {
+                        console.warn('Failed to decode PAK sheet chunk:', e);
+                    }
                 }
                 return sheets;
             }
@@ -1278,6 +1463,7 @@ window.H3 = {
     PakFile,
     SndFile,
     VidFile,
+    DDS,
     getFileExtension,
     getFileCategory,
     DataView2,

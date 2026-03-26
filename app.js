@@ -873,10 +873,43 @@
             data[8] === 0x57 && data[9] === 0x41 && data[10] === 0x56 && data[11] === 0x45;
     }
 
+    function wrapRawPcmAsWav(rawPcm, sampleRate, channels, bitsPerSample) {
+        const dataSize = rawPcm.length;
+        const blockAlign = channels * bitsPerSample / 8;
+        const byteRate = sampleRate * blockAlign;
+        const buffer = new ArrayBuffer(44 + dataSize);
+        const view = new DataView(buffer);
+        const out = new Uint8Array(buffer);
+        // RIFF header
+        out[0]=0x52; out[1]=0x49; out[2]=0x46; out[3]=0x46;
+        view.setUint32(4, 36 + dataSize, true);
+        out[8]=0x57; out[9]=0x41; out[10]=0x56; out[11]=0x45;
+        // fmt chunk
+        out[12]=0x66; out[13]=0x6D; out[14]=0x74; out[15]=0x20;
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, channels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitsPerSample, true);
+        // data chunk
+        out[36]=0x64; out[37]=0x61; out[38]=0x74; out[39]=0x61;
+        view.setUint32(40, dataSize, true);
+        out.set(rawPcm instanceof Uint8Array ? rawPcm : new Uint8Array(rawPcm), 44);
+        return out;
+    }
+
     function showAudioPreview(container, data, filename) {
         const isWav = isWavData(data);
-        const mimeType = isWav ? 'audio/wav' : 'application/octet-stream';
-        const blob = new Blob([data], { type: mimeType });
+        let audioData;
+        if (isWav) {
+            audioData = data;
+        } else {
+            // Wrap raw PCM as WAV (HoMM3 default: 22050 Hz, mono, 8-bit unsigned)
+            audioData = wrapRawPcmAsWav(data, 22050, 1, 8);
+        }
+        const blob = new Blob([audioData], { type: 'audio/wav' });
         const url = URL.createObjectURL(blob);
 
         container.innerHTML = `
@@ -885,7 +918,7 @@
                     <span class="preview-filename">${escapeHtml(filename)}</span>
                     <div class="preview-meta">
                         <span>${formatSize(data.length)}</span>
-                        <span>${isWav ? 'WAV Audio' : 'Audio'}</span>
+                        <span>${isWav ? 'WAV Audio' : 'Raw Audio (wrapped as WAV)'}</span>
                     </div>
                     <div class="preview-toolbar">
                         <button id="audio-export-btn" title="Export file">💾</button>
@@ -895,15 +928,27 @@
                     <div style="text-align:center;">
                         <div style="font-size:48px; margin-bottom:16px;">🔊</div>
                         <audio controls src="${url}" style="width:100%; max-width:400px;"></audio>
+                        <div id="audio-error-msg" style="display:none; margin-top:12px; color:var(--text-muted); font-size:12px;">
+                            Playback not supported. Use the export button to download the file.
+                        </div>
                     </div>
                 </div>
             </div>
         `;
 
+        // Error handler for unsupported audio codecs
+        const audioEl = container.querySelector('audio');
+        if (audioEl) {
+            audioEl.addEventListener('error', () => {
+                const errMsg = container.querySelector('#audio-error-msg');
+                if (errMsg) errMsg.style.display = '';
+            });
+        }
+
         const exportBtn = container.querySelector('#audio-export-btn');
         if (exportBtn) {
-            const exportName = isWav && !filename.includes('.') ? filename + '.wav' : filename;
-            exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), exportName));
+            const exportName = !filename.includes('.') ? filename + '.wav' : filename;
+            exportBtn.addEventListener('click', () => exportBlob(new Blob([isWav ? data : audioData]), exportName));
         }
 
         // Clean up blob URL when preview changes
