@@ -1106,13 +1106,13 @@ class PakFile {
         this.data = {};
     }
 
-    static async open(data) {
+    static async open(data, onProgress) {
         const pak = new PakFile();
-        await pak._parse(data);
+        await pak._parse(data, onProgress);
         return pak;
     }
 
-    async _parse(data) {
+    async _parse(data, onProgress) {
         const r = new DataView2(data);
         r.readUint32LE(); // dummy
         const infoOffset = r.readUint32LE();
@@ -1122,6 +1122,10 @@ class PakFile {
         let offsetName = r.tell();
 
         for (let i = 0; i < files; i++) {
+            if (onProgress && i % 10 === 0) {
+                onProgress(i / files);
+                await new Promise(r2 => setTimeout(r2, 0));
+            }
             r.seek(offsetName);
             const nameBytes = r.readBytes(8);
             const nullIdx = nameBytes.indexOf(0);

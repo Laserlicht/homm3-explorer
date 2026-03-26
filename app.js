@@ -259,8 +259,8 @@
                         setMode('explorer');
                         toast(`Loaded ${file.name} (${state.fileList.length} files)`, 'success');
                     } else if (ext === 'pak') {
-                        showLoading('Parsing PAK archive...');
-                        state.archive = await H3.PakFile.open(data);
+                        showLoading('Parsing PAK archive...', 0);
+                        state.archive = await H3.PakFile.open(data, p => showLoading('Parsing PAK archive...', p));
                         state.archiveName = file.name;
                         state.archiveType = 'pak';
                         state.archives.set(file.name, { archive: state.archive, type: 'pak' });
@@ -719,13 +719,7 @@
                     const rawChunks = state.archive.getRawChunks(file.sheet);
                     hideLoading();
                     if (sheets && sheets.length > 0) {
-                        showImagePreview(preview, sheets[0], file.name, `${sheets[0].width}×${sheets[0].height}`, 'pak-sheet');
-                        if (rawChunks) {
-                            addRawExportButton(preview, rawChunks[0], `${file.sheet}_sheet0.dds`);
-                            if (rawChunks.length > 1) {
-                                addRawExportAllButton(preview, rawChunks, file.sheet);
-                            }
-                        }
+                        showPakSheetPreview(preview, sheets, rawChunks, file.sheet);
                     }
                 }
             }
@@ -808,10 +802,117 @@
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
 
+    function showPakSheetPreview(container, sheets, rawChunks, sheetName) {
+        let currentIdx = 0;
+        const sheetCount = sheets.length;
+        // Build sheet selector options
+        let sheetOptions = '';
+        for (let i = 0; i < sheetCount; i++) {
+            sheetOptions += `<option value="${i}">Sheet ${i} (${sheets[i].width}×${sheets[i].height})</option>`;
+        }
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(sheetName)}</span>
+                    <div class="preview-meta">
+                        <span id="pak-sheet-dims">${sheets[0].width}×${sheets[0].height}</span>
+                        <span>PAK-SHEET</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        ${sheetCount > 1 ? `<select id="pak-sheet-select" title="Select sheet">${sheetOptions}</select>` : `<span style="font-size:12px;color:var(--text-muted)">Sheet 0</span>`}
+                        <button title="Zoom fit" data-zoom="fit">⊡</button>
+                        <button title="Actual size" data-zoom="actual">1:1</button>
+                        <button title="2x" data-zoom="2x">2×</button>
+                        <button title="4x" data-zoom="4x">4×</button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□ Border</button>
+                        <button title="Export as PNG" id="export-png-btn">💾 PNG</button>
+                    </div>
+                </div>
+                <div class="preview-body checkerboard" id="preview-img-body"></div>
+            </div>
+        `;
+
+        const body = container.querySelector('#preview-img-body');
+        const dimsEl = container.querySelector('#pak-sheet-dims');
+        const c = document.createElement('canvas');
+        body.appendChild(c);
+
+        function showSheet(idx) {
+            currentIdx = idx;
+            const sheet = sheets[idx];
+            c.width = sheet.width;
+            c.height = sheet.height;
+            c.getContext('2d').drawImage(sheet, 0, 0);
+            if (state.showBorders) c.classList.add('img-border');
+            else c.classList.remove('img-border');
+            dimsEl.textContent = `${sheet.width}×${sheet.height}`;
+        }
+        showSheet(0);
+
+        // Sheet selector
+        const sel = container.querySelector('#pak-sheet-select');
+        if (sel) {
+            sel.addEventListener('change', () => showSheet(parseInt(sel.value)));
+        }
+
+        // Border toggle
+        const borderBtn = container.querySelector('#border-toggle-btn');
+        if (borderBtn) {
+            borderBtn.addEventListener('click', () => {
+                state.showBorders = !state.showBorders;
+                borderBtn.classList.toggle('active', state.showBorders);
+                c.classList.toggle('img-border', state.showBorders);
+            });
+        }
+
+        // Zoom controls
+        $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const zoom = btn.dataset.zoom;
+                if (zoom === 'fit') {
+                    body.classList.remove('zoom-actual');
+                    c.style.transform = '';
+                } else if (zoom === 'actual') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = '';
+                } else if (zoom === '2x') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = 'scale(2)';
+                    c.style.transformOrigin = 'center';
+                } else if (zoom === '4x') {
+                    body.classList.add('zoom-actual');
+                    c.style.transform = 'scale(4)';
+                    c.style.transformOrigin = 'center';
+                }
+            });
+        });
+
+        // Export PNG
+        const pngBtn = container.querySelector('#export-png-btn');
+        if (pngBtn) pngBtn.addEventListener('click', () => exportCanvasAsPng(c, `${sheetName}_sheet${currentIdx}.png`));
+
+        // Raw DDS export buttons
+        if (rawChunks) {
+            const toolbar = container.querySelector('.preview-toolbar');
+            if (toolbar) {
+                const ddsBtn = document.createElement('button');
+                ddsBtn.title = 'Export raw DDS';
+                ddsBtn.textContent = '💾 DDS';
+                ddsBtn.addEventListener('click', () => exportBlob(new Blob([rawChunks[currentIdx]]), `${sheetName}_sheet${currentIdx}.dds`));
+                toolbar.appendChild(ddsBtn);
+                if (rawChunks.length > 1) {
+                    addRawExportAllButton(container, rawChunks, sheetName);
+                }
+            }
+        }
+    }
+
     function addRawExportButton(container, rawData, filename) {
         const toolbar = container.querySelector('.preview-toolbar');
         if (!toolbar) return;
         const btn = document.createElement('button');
+        btn.className = 'pak-dds-export';
         btn.title = 'Export raw DDS';
         btn.textContent = '💾 DDS';
         btn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
