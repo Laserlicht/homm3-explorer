@@ -22,7 +22,7 @@
         standaloneFiles: new Map(), // name -> {data, type}
 
         // Explorer
-        viewMode: 'list', // 'list' | 'grid'
+        viewMode: 'grid', // 'list' | 'grid'
         iconSize: 64,
 
         // DEF viewer state
@@ -41,7 +41,7 @@
         // Def viewer sidebar
         defViewMode: 'grid',
         defIconSize: 64,
-        defAnimThumbs: false,
+        defAnimThumbs: true,
 
         // Thumbnail cache
         thumbCache: new Map(),
