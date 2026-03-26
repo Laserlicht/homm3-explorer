@@ -2775,6 +2775,13 @@
         $('#btn-download-demo').addEventListener('click', downloadDemo);
         $('#welcome-demo').addEventListener('click', downloadDemo);
 
+        // About modal
+        const aboutModal = $('#about-modal');
+        $('#btn-about').addEventListener('click', () => { aboutModal.style.display = 'flex'; });
+        $('#about-close').addEventListener('click', () => { aboutModal.style.display = 'none'; });
+        aboutModal.addEventListener('click', e => { if (e.target === aboutModal) aboutModal.style.display = 'none'; });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape' && aboutModal.style.display !== 'none') aboutModal.style.display = 'none'; });
+
         // Archive download buttons
         els.btnDownloadOriginal.addEventListener('click', downloadArchiveOriginal);
         els.btnDownloadZip.addEventListener('click', downloadArchiveAsZip);
