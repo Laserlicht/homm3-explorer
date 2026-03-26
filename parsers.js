@@ -1,6 +1,9 @@
 // ============================================================
 // HoMM3 File Parsers - JavaScript reimplementation of homm3data
 // Matches the Python library algorithms 100%
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 HoMM3 Explorer Contributors
 // ============================================================
 
 // ---- Utility helpers ----
@@ -106,11 +109,10 @@ class LodFile {
         return result;
     }
 
-    _extractFirstLzmaStream(data) {
-        // LZMA decompression - basic implementation
-        // This matches the Python code that extracts at offset 1
-        // For browser usage, we'll use a simplified approach
-        throw new Error('LZMA decompression (HotA 1.8) not supported in browser yet');
+    _extractFirstLzmaStream(data, uncompressedSize) {
+        // Raw LZMA1 stream at offset 1, params from binwalk/homm3data:
+        // lc=3, lp=0, pb=2, dict_size=262144 (256 KiB)
+        return LZMA2Decode.decompressRaw(data.subarray(1), uncompressedSize, 3, 0, 2, 262144);
     }
 
     async _parse(data) {
@@ -179,7 +181,7 @@ class LodFile {
             if (csize !== 0) {
                 const compressed = buf.slice(offset, offset + csize);
                 if (this.isHota18 && compressionMethod === 2) {
-                    return this._extractFirstLzmaStream(compressed);
+                    return this._extractFirstLzmaStream(compressed, size);
                 } else {
                     return await zlibDecompress(compressed);
                 }
@@ -1436,445 +1438,6 @@ class VidFile {
     }
 }
 
-// ============================================================
-// ============================================================
-// SMK (Smacker) Video Decoder
-// ============================================================
-const SMK_PAL = new Uint8Array([
-    0x00,0x04,0x08,0x0C,0x10,0x14,0x18,0x1C,
-    0x20,0x24,0x28,0x2C,0x30,0x34,0x38,0x3C,
-    0x41,0x45,0x49,0x4D,0x51,0x55,0x59,0x5D,
-    0x61,0x65,0x69,0x6D,0x71,0x75,0x79,0x7D,
-    0x82,0x86,0x8A,0x8E,0x92,0x96,0x9A,0x9E,
-    0xA2,0xA6,0xAA,0xAE,0xB2,0xB6,0xBA,0xBE,
-    0xC3,0xC7,0xCB,0xCF,0xD3,0xD7,0xDB,0xDF,
-    0xE3,0xE7,0xEB,0xEF,0xF3,0xF7,0xFB,0xFF
-]);
-
-const SMK_BLOCK_RUNS = [
-     1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16,
-    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
-    49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 128, 256, 512, 1024, 2048
-];
-
-class SmkBitReader {
-    constructor(data, offset = 0) {
-        this.d = data instanceof Uint8Array ? data : new Uint8Array(data);
-        this.p = offset;
-        this.b = 0;
-    }
-    bit() {
-        if (this.p >= this.d.length) return 0;
-        const v = (this.d[this.p] >> this.b) & 1;
-        if (++this.b >= 8) { this.b = 0; this.p++; }
-        return v;
-    }
-    bits(n) {
-        let val = 0, shift = 0;
-        while (n > 0) {
-            if (this.p >= this.d.length) break;
-            const avail = 8 - this.b;
-            const take = Math.min(n, avail);
-            val |= ((this.d[this.p] >> this.b) & ((1 << take) - 1)) << shift;
-            shift += take; n -= take; this.b += take;
-            if (this.b >= 8) { this.b = 0; this.p++; }
-        }
-        return val;
-    }
-    skip() { if (++this.b >= 8) { this.b = 0; this.p++; } }
-}
-
-class SmackerDecoder {
-    static async decode(data, onProgress) {
-        const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
-        const r = new DataView2(u8);
-
-        const magic = r.readUint32LE();
-        const m3 = (magic >> 24) & 0xFF;
-        if ((magic & 0xFFFFFF) !== 0x4B4D53 || (m3 !== 0x32 && m3 !== 0x34))
-            throw new Error('Not a valid SMK file');
-        const isSMK4 = m3 === 0x34;
-
-        const width = r.readUint32LE();
-        const height = r.readUint32LE();
-        let nframes = r.readUint32LE();
-        const ptsInc = r.readInt32LE();
-        const flags = r.readUint32LE();
-        if (flags & 1) nframes++;
-
-        let frameDuration;
-        if (ptsInc < 0) frameDuration = -ptsInc / 100;
-        else if (ptsInc > 0) frameDuration = ptsInc;
-        else frameDuration = 1000 / 15;
-        const fps = 1000 / frameDuration;
-
-        r.readBytes(28);
-        const treesize = r.readUint32LE();
-        const treeSizes = [r.readUint32LE(), r.readUint32LE(), r.readUint32LE(), r.readUint32LE()];
-
-        const audioTracks = [];
-        for (let i = 0; i < 7; i++) {
-            const rate = r.readUint16LE() | (r.readUint8() << 16);
-            audioTracks.push({ rate, flags: r.readUint8() });
-        }
-        r.readUint32LE();
-
-        const frameSizes = new Uint32Array(nframes);
-        for (let i = 0; i < nframes; i++) frameSizes[i] = r.readUint32LE();
-        const frameFlags = new Uint8Array(nframes);
-        for (let i = 0; i < nframes; i++) frameFlags[i] = r.readUint8();
-        const treeData = r.readBytes(treesize);
-        const dataOffset = r.tell();
-
-        const trees = SmackerDecoder._buildTrees(treeData, treeSizes);
-
-        const frameBuffer = new Uint8Array(width * height);
-        const palette = new Uint8Array(768);
-        const indexedFrames = [];
-        const palettes = [];
-        const audioChunks = [];
-
-        let pos = dataOffset;
-        for (let f = 0; f < nframes; f++) {
-            const fsize = frameSizes[f] & ~3;
-            r.seek(pos);
-            let rem = fsize;
-            const ff = frameFlags[f];
-
-            if (ff & 1) rem = SmackerDecoder._decodePalette(r, palette, rem);
-
-            const af = ff >> 1;
-            for (let t = 0; t < 7; t++) {
-                if (af & (1 << t)) {
-                    const asize = r.readUint32LE();
-                    rem -= asize;
-                    if (t === 0 && audioTracks[0].rate && asize > 4) {
-                        const payload = r.readBytes(asize - 4);
-                        if (audioTracks[0].flags & 0x80) {
-                            audioChunks.push(SmackerDecoder._decodeAudio(payload));
-                        } else {
-                            const is16 = !!(audioTracks[0].flags & 0x20);
-                            audioChunks.push(is16
-                                ? new Int16Array(payload.buffer, payload.byteOffset, payload.byteLength >> 1)
-                                : payload);
-                        }
-                    } else {
-                        r.readBytes(Math.max(0, asize - 4));
-                    }
-                }
-            }
-
-            SmackerDecoder._decodeVideoFrame(r, rem, frameBuffer, width, height, trees, isSMK4);
-
-            indexedFrames.push(new Uint8Array(frameBuffer));
-            palettes.push(new Uint8Array(palette));
-
-            pos += fsize;
-            if (onProgress && f % 5 === 0) {
-                onProgress(f / nframes);
-                await new Promise(resolve => setTimeout(resolve, 0));
-            }
-        }
-
-        let audio = null;
-        if (audioChunks.length > 0 && audioTracks[0].rate) {
-            const is16 = !!(audioTracks[0].flags & 0x20);
-            const isStereo = !!(audioTracks[0].flags & 0x10);
-            let totalLen = 0;
-            for (const c of audioChunks) totalLen += c.length;
-            const combined = is16 ? new Int16Array(totalLen) : new Uint8Array(totalLen);
-            let off = 0;
-            for (const c of audioChunks) { combined.set(c, off); off += c.length; }
-            audio = { samples: combined, sampleRate: audioTracks[0].rate, channels: isStereo ? 2 : 1, bitsPerSample: is16 ? 16 : 8 };
-        }
-
-        return { width, height, fps, frameDuration, nframes, indexedFrames, palettes, audio, isSMK4 };
-    }
-
-    static _buildTrees(treeData, sizes) {
-        const bits = new SmkBitReader(treeData);
-        const trees = [];
-        for (let i = 0; i < 4; i++) {
-            if (!bits.bit()) {
-                trees.push({ values: new Int32Array(2), last: [1, 1, 1] });
-            } else {
-                trees.push(SmackerDecoder._decodeHeaderTree(bits, sizes[i]));
-            }
-        }
-        return trees;
-    }
-
-    static _decodeHeaderTree(bits, size) {
-        const subs = [null, null], vals = [0, 0];
-        for (let i = 0; i < 2; i++) {
-            if (!bits.bit()) { vals[i] = 0; continue; }
-            subs[i] = SmackerDecoder._decodeSmallTree(bits, 0);
-            bits.skip();
-        }
-        const esc = [bits.bits(16), bits.bits(16), bits.bits(16)];
-        const maxLen = ((size + 3) >> 2) + 3;
-        const values = new Int32Array(maxLen);
-        const last = [-1, -1, -1];
-        let cur = 0;
-        (function build(depth) {
-            if (depth > 500 || cur >= maxLen) return;
-            if (!bits.bit()) {
-                const i1 = subs[0] !== null ? SmackerDecoder._readSmallTree(bits, subs[0]) : vals[0];
-                const i2 = subs[1] !== null ? SmackerDecoder._readSmallTree(bits, subs[1]) : vals[1];
-                let v = i1 | (i2 << 8);
-                if (v === esc[0]) { last[0] = cur; v = 0; }
-                else if (v === esc[1]) { last[1] = cur; v = 0; }
-                else if (v === esc[2]) { last[2] = cur; v = 0; }
-                values[cur++] = v;
-            } else {
-                const t = cur++;
-                build(depth + 1);
-                values[t] = (0x80000000 | (cur - t - 1)) | 0;
-                build(depth + 1);
-            }
-        })(0);
-        bits.skip();
-        if (last[0] === -1) last[0] = cur++;
-        if (last[1] === -1) last[1] = cur++;
-        if (last[2] === -1) last[2] = cur++;
-        return { values, last };
-    }
-
-    static _decodeSmallTree(bits, depth) {
-        if (depth > 30 || !bits.bit()) return bits.bits(8);
-        return [SmackerDecoder._decodeSmallTree(bits, depth + 1), SmackerDecoder._decodeSmallTree(bits, depth + 1)];
-    }
-
-    static _readSmallTree(bits, tree) {
-        while (Array.isArray(tree)) tree = bits.bit() ? tree[1] : tree[0];
-        return tree;
-    }
-
-    static _smkGetCode(bits, tree) {
-        const v = tree.values, l = tree.last;
-        let i = 0;
-        while (v[i] < 0) {
-            if (bits.bit()) i += v[i] & 0x7FFFFFFF;
-            i++;
-        }
-        const val = v[i];
-        if (val !== v[l[0]]) { v[l[2]] = v[l[1]]; v[l[1]] = v[l[0]]; v[l[0]] = val; }
-        return val;
-    }
-
-    static _lastReset(t) {
-        t.values[t.last[0]] = t.values[t.last[1]] = t.values[t.last[2]] = 0;
-    }
-
-    static _decodePalette(r, pal, remaining) {
-        const old = new Uint8Array(pal);
-        let size = r.readUint8() * 4;
-        remaining -= size;
-        size--;
-        let sz = 0, pi = 0, rd = 0;
-        while (sz < 256 && rd < size) {
-            const t = r.readUint8(); rd++;
-            if (t & 0x80) {
-                const skip = (t & 0x7F) + 1;
-                sz += skip; pi += skip * 3;
-            } else if (t & 0x40) {
-                const off = r.readUint8(); rd++;
-                let cnt = (t & 0x3F) + 1, src = off * 3;
-                while (cnt-- > 0 && sz < 256) {
-                    pal[pi++] = old[src++]; pal[pi++] = old[src++]; pal[pi++] = old[src++]; sz++;
-                }
-            } else {
-                pal[pi++] = SMK_PAL[t];
-                pal[pi++] = SMK_PAL[r.readUint8() & 0x3F];
-                pal[pi++] = SMK_PAL[r.readUint8() & 0x3F];
-                rd += 2; sz++;
-            }
-        }
-        if (rd < size) r.readBytes(size - rd);
-        return remaining;
-    }
-
-    static _decodeVideoFrame(r, remaining, fb, w, h, trees, isSMK4) {
-        if (remaining <= 0) return;
-        const data = r.readBytes(remaining);
-        const bits = new SmkBitReader(data);
-        const [mmap, mclr, full, type] = trees;
-        SmackerDecoder._lastReset(mmap);
-        SmackerDecoder._lastReset(mclr);
-        SmackerDecoder._lastReset(full);
-        SmackerDecoder._lastReset(type);
-
-        const bw = w >> 2, blocks = (w >> 2) * (h >> 2);
-        let blk = 0;
-        while (blk < blocks) {
-            const t = SmackerDecoder._smkGetCode(bits, type);
-            let run = SMK_BLOCK_RUNS[(t >> 2) & 0x3F];
-            switch (t & 3) {
-                case 0: // MONO
-                    while (run-- > 0 && blk < blocks) {
-                        const clr = SmackerDecoder._smkGetCode(bits, mclr);
-                        let map = SmackerDecoder._smkGetCode(bits, mmap);
-                        const bx = (blk % bw) * 4, by = (blk / bw | 0) * 4;
-                        const hi = (clr >> 8) & 0xFF, lo = clr & 0xFF;
-                        for (let row = 0; row < 4; row++) {
-                            const o = (by + row) * w + bx;
-                            fb[o] = (map & 1) ? hi : lo; fb[o+1] = (map & 2) ? hi : lo;
-                            fb[o+2] = (map & 4) ? hi : lo; fb[o+3] = (map & 8) ? hi : lo;
-                            map >>= 4;
-                        }
-                        blk++;
-                    }
-                    break;
-                case 1: { // FULL
-                    let mode = 0;
-                    if (isSMK4) { if (bits.bit()) mode = 1; else if (bits.bit()) mode = 2; }
-                    while (run-- > 0 && blk < blocks) {
-                        const bx = (blk % bw) * 4, by = (blk / bw | 0) * 4;
-                        if (mode === 0) {
-                            for (let row = 0; row < 4; row++) {
-                                const o = (by + row) * w + bx;
-                                let p = SmackerDecoder._smkGetCode(bits, full);
-                                fb[o+2] = p & 0xFF; fb[o+3] = (p >> 8) & 0xFF;
-                                p = SmackerDecoder._smkGetCode(bits, full);
-                                fb[o] = p & 0xFF; fb[o+1] = (p >> 8) & 0xFF;
-                            }
-                        } else if (mode === 1) {
-                            let p = SmackerDecoder._smkGetCode(bits, full);
-                            for (let row = 0; row < 2; row++) {
-                                const o = (by + row) * w + bx;
-                                fb[o] = fb[o+1] = p & 0xFF; fb[o+2] = fb[o+3] = (p >> 8) & 0xFF;
-                            }
-                            p = SmackerDecoder._smkGetCode(bits, full);
-                            for (let row = 2; row < 4; row++) {
-                                const o = (by + row) * w + bx;
-                                fb[o] = fb[o+1] = p & 0xFF; fb[o+2] = fb[o+3] = (p >> 8) & 0xFF;
-                            }
-                        } else {
-                            for (let i = 0; i < 2; i++) {
-                                const p2 = SmackerDecoder._smkGetCode(bits, full);
-                                const p1 = SmackerDecoder._smkGetCode(bits, full);
-                                for (let row = 0; row < 2; row++) {
-                                    const o = (by + i * 2 + row) * w + bx;
-                                    fb[o] = p1 & 0xFF; fb[o+1] = (p1 >> 8) & 0xFF;
-                                    fb[o+2] = p2 & 0xFF; fb[o+3] = (p2 >> 8) & 0xFF;
-                                }
-                            }
-                        }
-                        blk++;
-                    }
-                    break;
-                }
-                case 2: // SKIP
-                    while (run-- > 0 && blk < blocks) blk++;
-                    break;
-                case 3: { // FILL
-                    const c = (t >> 8) & 0xFF;
-                    while (run-- > 0 && blk < blocks) {
-                        const bx = (blk % bw) * 4, by = (blk / bw | 0) * 4;
-                        for (let row = 0; row < 4; row++) {
-                            const o = (by + row) * w + bx;
-                            fb[o] = fb[o+1] = fb[o+2] = fb[o+3] = c;
-                        }
-                        blk++;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    static _decodeAudio(payload) {
-        const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-        const unpSize = view.getUint32(0, true);
-        const bits = new SmkBitReader(payload, 4);
-
-        if (!bits.bit()) return new Int16Array(0);
-        const stereo = bits.bit();
-        const is16 = bits.bit();
-        const nTrees = 1 << (is16 + stereo);
-        const trees = [], tVals = [];
-        for (let i = 0; i < nTrees; i++) {
-            bits.skip();
-            const tree = SmackerDecoder._decodeSmallTree(bits, 0);
-            bits.skip();
-            trees.push(tree);
-            tVals.push(typeof tree === 'number' ? tree : null);
-        }
-        const channels = stereo + 1;
-        if (is16) {
-            const nSamples = unpSize >> 1;
-            const samples = new Int16Array(nSamples);
-            const pred = new Array(channels);
-            for (let ch = stereo; ch >= 0; ch--) {
-                const v = bits.bits(16);
-                pred[ch] = ((v >> 8) & 0xFF) | ((v & 0xFF) << 8);
-            }
-            for (let ch = 0; ch <= stereo; ch++)
-                samples[ch] = pred[ch] >= 32768 ? pred[ch] - 65536 : pred[ch];
-            for (let i = stereo + 1; i < nSamples; i++) {
-                const idx = 2 * (i & stereo);
-                const lo = tVals[idx] !== null ? tVals[idx] : SmackerDecoder._readSmallTree(bits, trees[idx]);
-                const hi = tVals[idx+1] !== null ? tVals[idx+1] : SmackerDecoder._readSmallTree(bits, trees[idx+1]);
-                const ch = stereo ? (idx >> 1) : 0;
-                pred[ch] = (pred[ch] + (lo | (hi << 8))) & 0xFFFF;
-                samples[i] = pred[ch] >= 32768 ? pred[ch] - 65536 : pred[ch];
-            }
-            return samples;
-        } else {
-            const samples = new Uint8Array(unpSize);
-            const pred = new Array(channels);
-            for (let ch = stereo; ch >= 0; ch--) pred[ch] = bits.bits(8);
-            for (let ch = 0; ch <= stereo; ch++) samples[ch] = pred[ch];
-            for (let i = stereo + 1; i < unpSize; i++) {
-                const idx = i & stereo;
-                const val = tVals[idx] !== null ? tVals[idx] : SmackerDecoder._readSmallTree(bits, trees[idx]);
-                pred[idx] = (pred[idx] + val) & 0xFF;
-                samples[i] = pred[idx];
-            }
-            return samples;
-        }
-    }
-}
-
-// ============================================================
-// BIK (Bink) Header Parser (metadata only, no video/audio decode)
-// ============================================================
-class BinkHeader {
-    static parse(data) {
-        const r = new DataView2(data);
-        const tag = r.readUint32LE();
-        const sig = tag & 0xFFFFFF;
-        // 'BIK' = 0x4B4942, 'KB2' = 0x32424B
-        if (sig !== 0x4B4942 && sig !== 0x32424B)
-            throw new Error('Not a valid BIK file');
-        const fileSize = r.readUint32LE() + 8;
-        const nframes = r.readUint32LE();
-        r.readUint32LE(); // largest frame
-        r.readUint32LE(); // skip
-        const width = r.readUint32LE();
-        const height = r.readUint32LE();
-        const fpsNum = r.readUint32LE();
-        const fpsDen = r.readUint32LE();
-        const fps = fpsDen > 0 ? fpsNum / fpsDen : 0;
-        r.readUint32LE(); // video flags
-        const numAudioTracks = r.readUint32LE();
-        const audioTracks = [];
-        if (numAudioTracks > 0 && numAudioTracks <= 256) {
-            const revision = (tag >> 24) & 0xFF;
-            if ((sig === 0x4B4942 && revision === 0x6B) ||
-                (sig === 0x32424B && (revision === 0x69 || revision === 0x6A || revision === 0x6B)))
-                r.readUint32LE();
-            r.readBytes(numAudioTracks * 4);
-            for (let i = 0; i < numAudioTracks; i++) {
-                const sampleRate = r.readUint16LE();
-                const fl = r.readUint16LE();
-                audioTracks.push({ sampleRate, stereo: !!(fl & 0x2000), useDCT: !!(fl & 0x1000) });
-            }
-        }
-        return { width, height, fps, nframes, fileSize, audioTracks };
-    }
-}
 
 // ============================================================
 // File type detection helpers
@@ -1888,7 +1451,7 @@ function getFileExtension(filename) {
 function getFileCategory(filename) {
     const ext = getFileExtension(filename);
     switch (ext) {
-        case 'pcx': return 'image';
+        case 'pcx': case 'p32': return 'image';
         case 'def':
         case 'd32':
             return 'animation';
@@ -1920,8 +1483,6 @@ window.H3 = {
     SndFile,
     VidFile,
     DDS,
-    SmackerDecoder,
-    BinkHeader,
     getFileExtension,
     getFileCategory,
     DataView2,

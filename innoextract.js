@@ -1,6 +1,9 @@
 // ============================================================
 // InnoExtract.js - Inno Setup data extractor for GOG installers
 // Supports v5.5.0+ (LZMA2) and v5.6.2 (zlib), single-file & EXE+BIN
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 HoMM3 Explorer Contributors
 // ============================================================
 
 const InnoExtract = (function () {
@@ -94,19 +97,11 @@ const InnoExtract = (function () {
         });
     }
 
-    // ---- LZMA decompression for block headers (uses global LZMA) ----
+    // ---- LZMA decompression for block headers ----
 
     function lzmaDecompress(stripped) {
-        const lzmaInput = new Array(5 + 8 + stripped.length - 5);
-        for (let i = 0; i < 5; i++) lzmaInput[i] = stripped[i];
-        for (let i = 0; i < 8; i++) lzmaInput[5 + i] = 0xFF;
-        for (let i = 5; i < stripped.length; i++) lzmaInput[8 + i] = stripped[i];
-
-        const result = LZMA.decompress(lzmaInput);
-        if (result instanceof Uint8Array) return result;
-        const out = new Uint8Array(result.length);
-        for (let i = 0; i < result.length; i++) out[i] = result[i] & 0xFF;
-        return out;
+        // stripped: first 5 bytes = props + dict, rest = compressed data
+        return LZMA2Decode.decompressLzma1(stripped);
     }
 
     // ---- EXE parsing ----
@@ -315,15 +310,14 @@ const InnoExtract = (function () {
 
     // ---- Data chunk decompression ----
 
-    function decompressChunk(zlibData, expectedSize) {
-        // Try zlib (raw deflate) first
+    function decompressChunk(compData, expectedSize) {
+        // Try zlib first
         try {
-            return pako.inflate(zlibData);
+            return pako.inflate(compData);
         } catch (e) {
-            // Fall back to LZMA2 (v5.5.0)
-            // zlibData[0] = dict property byte, rest = LZMA2 stream
+            // Fall back to LZMA2
             if (typeof LZMA2Decode !== 'undefined') {
-                return LZMA2Decode.decompress(zlibData, expectedSize);
+                return LZMA2Decode.decompress(compData, expectedSize);
             }
             throw new Error('Decompression failed: ' + e.message);
         }
@@ -333,36 +327,86 @@ const InnoExtract = (function () {
 
     async function extractFile(sourceFile, dataOffset, dataEntries, fileInfo, onProgress) {
         const { location, chunkCount } = fileInfo;
-        const chunks = [];
-        let totalSize = 0;
 
-        for (let i = 0; i < chunkCount; i++) {
-            const entry = dataEntries[location + i];
-            const chunkPos = dataOffset + entry.chunkOffset;
+        if (chunkCount > 1) {
+            // Multi-chunk mode (GOG Galaxy v5.6.2)
+            // Each data entry is a separate chunk; decompress and concatenate
+            const chunks = [];
+            let totalSize = 0;
 
-            // Read zlb header (4 bytes magic) + compressed data (chunkSize bytes)
-            const raw = await readFileSlice(sourceFile, chunkPos, 4 + entry.chunkSize);
+            for (let i = 0; i < chunkCount; i++) {
+                const entry = dataEntries[location + i];
+                const chunkPos = dataOffset + entry.chunkOffset;
+                const chunkSize = Number(entry.chunkSize);
 
-            if (raw[0] !== 0x7A || raw[1] !== 0x6C || raw[2] !== 0x62 || raw[3] !== 0x1A) {
-                throw new Error('Invalid chunk data at offset ' + chunkPos);
+                const raw = await readFileSlice(sourceFile, chunkPos, 4 + chunkSize);
+
+                if (raw[0] !== 0x7A || raw[1] !== 0x6C || raw[2] !== 0x62 || raw[3] !== 0x1A) {
+                    throw new Error('Invalid chunk data at offset ' + chunkPos);
+                }
+
+                const compData = raw.subarray(4);
+                const decompressed = decompressChunk(compData, Number(entry.fileSize));
+
+                chunks.push(decompressed);
+                totalSize += decompressed.length;
+
+                if (onProgress) onProgress(i + 1, chunkCount);
             }
 
-            const compData = raw.subarray(4);
-            const decompressed = decompressChunk(compData, entry.fileSize);
-
-            chunks.push(decompressed);
-            totalSize += decompressed.length;
-
-            if (onProgress) onProgress(i + 1, chunkCount);
+            const result = new Uint8Array(totalSize);
+            let off = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, off);
+                off += chunk.length;
+            }
+            return result;
         }
 
-        const result = new Uint8Array(totalSize);
-        let off = 0;
-        for (const chunk of chunks) {
-            result.set(chunk, off);
-            off += chunk.length;
+        // Single-chunk mode (v5.5.0+)
+        const entry = dataEntries[location];
+        const chunkPos = dataOffset + entry.chunkOffset;
+        const fileOffset = Number(entry.fileOffset);
+        const fileSize = Number(entry.fileSize);
+        const chunkSize = Number(entry.chunkSize);
+
+        if (fileSize === 0) {
+            if (onProgress) onProgress(1, 1);
+            return new Uint8Array(0);
         }
-        return result;
+
+        if (onProgress) onProgress(0, 1);
+
+        // Peek at zlb header + first payload byte to detect compression
+        const header = await readFileSlice(sourceFile, chunkPos, 5);
+        if (header[0] !== 0x7A || header[1] !== 0x6C || header[2] !== 0x62 || header[3] !== 0x1A) {
+            throw new Error('Invalid chunk data at offset ' + chunkPos);
+        }
+
+        // 0x78 = zlib CMF byte, 0x00-0x28 = valid LZMA2 dict property
+        const firstByte = header[4];
+        if (firstByte !== 0x78 && firstByte > 40) {
+            // Uncompressed: read directly from the chunk at fileOffset
+            const data = await readFileSlice(sourceFile, chunkPos + 4 + fileOffset, fileSize);
+            if (onProgress) onProgress(1, 1);
+            return data;
+        }
+
+        // Compressed: read full chunk and decompress
+        const compData = await readFileSlice(sourceFile, chunkPos + 4, chunkSize);
+        let decompressed;
+        try {
+            decompressed = decompressChunk(compData, fileOffset + fileSize);
+        } catch (e) {
+            // Heuristic was wrong — treat as uncompressed
+            const data = await readFileSlice(sourceFile, chunkPos + 4 + fileOffset, fileSize);
+            if (onProgress) onProgress(1, 1);
+            return data;
+        }
+
+        if (onProgress) onProgress(1, 1);
+        // Copy to own buffer to avoid DataView2 offset issues with shared ArrayBuffer
+        return new Uint8Array(decompressed.subarray(fileOffset, fileOffset + fileSize));
     }
 
     return {

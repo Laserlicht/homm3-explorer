@@ -1,5 +1,8 @@
 // ============================================================
 // HoMM3 Explorer - Main Application
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 HoMM3 Explorer Contributors
 // ============================================================
 
 (() => {
@@ -75,6 +78,8 @@
         els.iconSizeSlider = $('#icon-size-slider');
         els.iconSizeControl = $('#icon-size-control');
         els.extFilter = $('#ext-filter');
+        els.btnDownloadOriginal = $('#btn-download-archive-original');
+        els.btnDownloadZip = $('#btn-download-archive-zip');
     }
 
     // ---- Utilities ----
@@ -118,7 +123,7 @@
 
     function getFileIcon(ext) {
         switch (ext) {
-            case 'pcx': return '🖼️';
+            case 'pcx': case 'p32': return '🖼️';
             case 'def': case 'd32': return '🎬';
             case 'txt': case 'xls': case 'csv': return '📄';
             case 'wav': case 'snd': return '🔊';
@@ -132,6 +137,121 @@
             case 'pak': return '🖼️';
             default: return '📁';
         }
+    }
+
+    // ---- Archive download helpers ----
+    function downloadArchiveOriginal() {
+        const info = state.archives.get(state.archiveName);
+        if (!info || !info.data) return;
+        const filename = state.archiveName.replace(/\s*\(GOG\)|\s*\(Demo\)/g, '');
+        exportBlob(new Blob([info.data]), filename);
+    }
+
+    async function downloadArchiveAsZip() {
+        if (!state.archive || !state.fileList.length) return;
+        const btn = els.btnDownloadZip;
+        btn.disabled = true;
+        btn.textContent = 'Building ZIP…';
+        try {
+            const zipName = state.archiveName.replace(/\.[^.]+$/, '') + '.zip';
+            const fileData = [];
+            for (const f of state.fileList) {
+                if (f.standalone) continue;
+                try {
+                    const bytes = await state.archive.getFile(f.name);
+                    if (bytes) fileData.push({ name: f.name, bytes });
+                } catch (_) { /* skip unreadable entries */ }
+            }
+            exportBlob(new Blob([buildZip(fileData)]), zipName);
+            toast(`Downloaded ${zipName} (${fileData.length} files)`, 'success');
+        } catch (err) {
+            toast('ZIP export failed: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg> ZIP';
+        }
+    }
+
+    // Minimal STORED (uncompressed) ZIP builder
+    function buildZip(files) {
+        const enc = new TextEncoder();
+        const localHeaders = [];
+        const centralDir = [];
+        let offset = 0;
+        const crc32 = makeCrc32();
+
+        for (const { name, bytes } of files) {
+            const nameBytes = enc.encode(name);
+            const crc = crc32(bytes);
+            const size = bytes.length;
+
+            // Local file header
+            const lh = new DataView(new ArrayBuffer(30 + nameBytes.length));
+            lh.setUint32(0, 0x04034b50, true);  // signature
+            lh.setUint16(4, 20, true);           // version needed
+            lh.setUint16(6, 0, true);            // flags
+            lh.setUint16(8, 0, true);            // method STORED
+            lh.setUint16(10, 0, true);           // mod time
+            lh.setUint16(12, 0, true);           // mod date
+            lh.setUint32(14, crc, true);         // CRC-32
+            lh.setUint32(18, size, true);        // compressed
+            lh.setUint32(22, size, true);        // uncompressed
+            lh.setUint16(26, nameBytes.length, true);
+            lh.setUint16(28, 0, true);           // extra length
+            new Uint8Array(lh.buffer).set(nameBytes, 30);
+
+            // Central directory entry
+            const cd = new DataView(new ArrayBuffer(46 + nameBytes.length));
+            cd.setUint32(0, 0x02014b50, true);  // signature
+            cd.setUint16(4, 20, true);           // version made
+            cd.setUint16(6, 20, true);           // version needed
+            cd.setUint16(8, 0, true);            // flags
+            cd.setUint16(10, 0, true);           // method
+            cd.setUint16(12, 0, true);           // mod time
+            cd.setUint16(14, 0, true);           // mod date
+            cd.setUint32(16, crc, true);
+            cd.setUint32(20, size, true);
+            cd.setUint32(24, size, true);
+            cd.setUint16(28, nameBytes.length, true);
+            cd.setUint16(30, 0, true);           // extra
+            cd.setUint16(32, 0, true);           // comment
+            cd.setUint16(34, 0, true);           // disk start
+            cd.setUint16(36, 0, true);           // int attr
+            cd.setUint32(38, 0, true);           // ext attr
+            cd.setUint32(42, offset, true);      // local header offset
+            new Uint8Array(cd.buffer).set(nameBytes, 46);
+
+            localHeaders.push(new Uint8Array(lh.buffer), bytes);
+            centralDir.push(new Uint8Array(cd.buffer));
+            offset += lh.buffer.byteLength + size;
+        }
+
+        const cdSize = centralDir.reduce((s, b) => s + b.length, 0);
+        const eocd = new DataView(new ArrayBuffer(22));
+        eocd.setUint32(0, 0x06054b50, true);
+        eocd.setUint16(4, 0, true);
+        eocd.setUint16(6, 0, true);
+        eocd.setUint16(8, files.length, true);
+        eocd.setUint16(10, files.length, true);
+        eocd.setUint32(12, cdSize, true);
+        eocd.setUint32(16, offset, true);
+        eocd.setUint16(20, 0, true);
+
+        return new Blob([...localHeaders, ...centralDir, new Uint8Array(eocd.buffer)]);
+    }
+
+    function makeCrc32() {
+        const table = new Int32Array(256);
+        for (let i = 0; i < 256; i++) {
+            let c = i;
+            for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            table[i] = c;
+        }
+        return function crc32(data) {
+            let crc = -1;
+            for (let i = 0; i < data.length; i++) crc = (crc >>> 8) ^ table[(crc ^ data[i]) & 0xFF];
+            return (crc ^ -1) >>> 0;
+        };
     }
 
     // ---- Export helpers ----
@@ -238,14 +358,12 @@
     }
 
     // ---- File input handling ----
-    function setupFileInput() {
-        els.fileInput.addEventListener('change', async (e) => {
-            const files = e.target.files;
-            if (!files.length) return;
+    async function processFiles(files) {
+        if (!files.length) return;
 
-            for (const file of files) {
-                const ext = file.name.split('.').pop().toLowerCase();
-                const data = new Uint8Array(await file.arrayBuffer());
+        for (const file of files) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            const data = new Uint8Array(await file.arrayBuffer());
 
                 try {
                     if (ext === 'lod') {
@@ -253,7 +371,7 @@
                         state.archive = await H3.LodFile.open(data);
                         state.archiveName = file.name;
                         state.archiveType = 'lod';
-                        state.archives.set(file.name, { archive: state.archive, type: 'lod' });
+                        state.archives.set(file.name, { archive: state.archive, type: 'lod', data });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -264,7 +382,7 @@
                         state.archive = await H3.PakFile.open(data, p => showLoading('Parsing PAK archive...', p));
                         state.archiveName = file.name;
                         state.archiveType = 'pak';
-                        state.archives.set(file.name, { archive: state.archive, type: 'pak' });
+                        state.archives.set(file.name, { archive: state.archive, type: 'pak', data });
                         updateArchiveSelector();
                         buildPakFileList();
                         updateStandaloneUI();
@@ -279,8 +397,8 @@
                             setMode('defviewer');
                         }
                         toast(`Loaded DEF: ${file.name}`, 'success');
-                    } else if (ext === 'pcx') {
-                        showLoading('Parsing PCX file...');
+                    } else if (ext === 'pcx' || ext === 'p32') {
+                        showLoading('Parsing image file...');
                         if (H3.PCX.isPcx(data)) {
                             const img = H3.PCX.readPcx(data);
                             state.standaloneFiles.set(file.name, { data, type: 'pcx', parsed: img });
@@ -304,7 +422,7 @@
                         state.archive = await H3.LodFile.open(data);
                         state.archiveName = file.name;
                         state.archiveType = 'lod';
-                        state.archives.set(file.name, { archive: state.archive, type: 'lod' });
+                        state.archives.set(file.name, { archive: state.archive, type: 'lod', data });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -315,7 +433,7 @@
                         state.archive = await H3.SndFile.open(data);
                         state.archiveName = file.name;
                         state.archiveType = 'snd';
-                        state.archives.set(file.name, { archive: state.archive, type: 'snd' });
+                        state.archives.set(file.name, { archive: state.archive, type: 'snd', data });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -326,7 +444,7 @@
                         state.archive = await H3.VidFile.open(data);
                         state.archiveName = file.name;
                         state.archiveType = 'vid';
-                        state.archives.set(file.name, { archive: state.archive, type: 'vid' });
+                        state.archives.set(file.name, { archive: state.archive, type: 'vid', data });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -348,6 +466,11 @@
                 }
             }
             hideLoading();
+    }
+
+    function setupFileInput() {
+        els.fileInput.addEventListener('change', async (e) => {
+            await processFiles(e.target.files);
             e.target.value = '';
         });
     }
@@ -528,7 +651,7 @@
                 iconDiv.style.height = state.iconSize + 'px';
 
                 // Show thumbnail for image types in grid view (lazy loaded)
-                if ((file.ext === 'pcx' || file.ext === 'def') && state.archiveType === 'lod') {
+                if ((file.ext === 'pcx' || file.ext === 'p32' || file.ext === 'def') && state.archiveType === 'lod') {
                     iconDiv.textContent = getFileIcon(file.ext);
                     iconDiv.dataset.lazyThumb = file.name;
                 } else {
@@ -596,7 +719,7 @@
             if (!data) { container.textContent = '❓'; return; }
 
             const ext = H3.getFileExtension(filename);
-            if (ext === 'pcx' && H3.PCX.isPcx(data)) {
+            if ((ext === 'pcx' || ext === 'p32') && H3.PCX.isPcx(data)) {
                 const img = H3.PCX.readPcx(data);
                 if (img) {
                     state.thumbCache.set(filename, img.canvas);
@@ -663,7 +786,7 @@
 
                 const ext = file.ext;
 
-                if (ext === 'pcx' && H3.PCX.isPcx(data)) {
+                if ((ext === 'pcx' || ext === 'p32') && H3.PCX.isPcx(data)) {
                     const img = H3.PCX.readPcx(data);
                     if (img) {
                         showImagePreview(preview, img.canvas, file.name, `${img.width}×${img.height}`, img.type, data);
@@ -698,7 +821,7 @@
                     showSmkPreview(preview, u8, file.name);
                 } else if (u8.length >= 4 && u8[0] === 0x42 && u8[1] === 0x49 && u8[2] === 0x4B) {
                     // BIK file
-                    showBikPreview(preview, u8, file.name);
+                    await showBikPreview(preview, u8, file.name);
                 } else {
                     showBinaryPreview(preview, data, file.name);
                 }
@@ -1456,6 +1579,7 @@
         exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
 
         renderFrame(0);
+        play();
 
         // Cleanup on preview change
         const obs = new MutationObserver(() => {
@@ -1468,7 +1592,142 @@
         obs.observe(container, { childList: true, subtree: true });
     }
 
-    function showBikPreview(container, data, filename) {
+    async function showBikPreview(container, data, filename) {
+        showLoading('Decoding Bink video...', 0);
+        let decoded;
+        try {
+            decoded = await H3.BinkDecoder.decode(data, p => showLoading('Decoding Bink video...', p));
+        } catch (e) {
+            hideLoading();
+            console.error('BIK decode error:', e);
+            // Fallback to header-only preview
+            showBikFallbackPreview(container, data, filename, e.message);
+            return;
+        }
+        hideLoading();
+
+        const { width, height, fps, frameDuration, nframes, rgbaFrames, audio } = decoded;
+
+        // Build audio WAV blob
+        let audioUrl = null;
+        if (audio) {
+            const wavData = buildPcmWav(audio.samples, audio.sampleRate, audio.channels, audio.bitsPerSample);
+            const blob = new Blob([wavData], { type: 'audio/wav' });
+            audioUrl = URL.createObjectURL(blob);
+        }
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${width}×${height}</span>
+                        <span>${nframes} frames</span>
+                        <span>${fps.toFixed(1)} fps</span>
+                        <span>Bink ${decoded.version || 'b'}</span>
+                        <span>${formatSize(data.length)}</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button id="video-export-btn" title="Export original file">💾</button>
+                    </div>
+                </div>
+                <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
+                    <canvas id="video-canvas" width="${width}" height="${height}" style="image-rendering:pixelated; max-width:100%; border:1px solid var(--border);"></canvas>
+                    <div class="video-controls">
+                        <button id="video-prev-btn" title="Previous frame">⏮</button>
+                        <button id="video-play-btn" title="Play/Pause">▶</button>
+                        <button id="video-next-btn" title="Next frame">⏭</button>
+                        <input type="range" id="video-slider" min="0" max="${nframes - 1}" value="0" style="flex:1;">
+                        <span id="video-frame-label" style="min-width:80px; text-align:right; font-size:12px; color:var(--text-muted);">1 / ${nframes}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const canvas = container.querySelector('#video-canvas');
+        const ctx2d = canvas.getContext('2d');
+        const playBtn = container.querySelector('#video-play-btn');
+        const prevBtn = container.querySelector('#video-prev-btn');
+        const nextBtn = container.querySelector('#video-next-btn');
+        const slider = container.querySelector('#video-slider');
+        const frameLabel = container.querySelector('#video-frame-label');
+        const exportBtn = container.querySelector('#video-export-btn');
+
+        let currentFrame = 0;
+        let playing = false;
+        let timer = null;
+        let audioEl = null;
+
+        if (audioUrl) {
+            audioEl = new Audio(audioUrl);
+            audioEl.volume = 1;
+        }
+
+        function renderFrame(idx) {
+            if (idx < 0 || idx >= nframes) return;
+            currentFrame = idx;
+            const rgba = rgbaFrames[idx];
+            const imgData = ctx2d.createImageData(width, height);
+            imgData.data.set(rgba);
+            ctx2d.putImageData(imgData, 0, 0);
+            slider.value = idx;
+            frameLabel.textContent = `${idx + 1} / ${nframes}`;
+        }
+
+        function play() {
+            if (playing) return;
+            playing = true;
+            playBtn.textContent = '⏸';
+            if (audioEl) {
+                audioEl.currentTime = currentFrame * frameDuration / 1000;
+                audioEl.play().catch(() => {});
+            }
+            const startTime = performance.now() - currentFrame * frameDuration;
+            function tick() {
+                if (!playing) return;
+                const elapsed = performance.now() - startTime;
+                const targetFrame = Math.floor(elapsed / frameDuration);
+                if (targetFrame >= nframes) {
+                    stop();
+                    renderFrame(0);
+                    return;
+                }
+                if (targetFrame !== currentFrame) {
+                    renderFrame(targetFrame);
+                }
+                timer = requestAnimationFrame(tick);
+            }
+            timer = requestAnimationFrame(tick);
+        }
+
+        function stop() {
+            playing = false;
+            playBtn.textContent = '▶';
+            if (timer) { cancelAnimationFrame(timer); timer = null; }
+            if (audioEl) audioEl.pause();
+        }
+
+        playBtn.addEventListener('click', () => { playing ? stop() : play(); });
+        prevBtn.addEventListener('click', () => { stop(); renderFrame(Math.max(0, currentFrame - 1)); });
+        nextBtn.addEventListener('click', () => { stop(); renderFrame(Math.min(nframes - 1, currentFrame + 1)); });
+        slider.addEventListener('input', () => { stop(); renderFrame(parseInt(slider.value)); });
+        exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), filename));
+
+        renderFrame(0);
+        play();
+
+        // Cleanup on preview change
+        const obs = new MutationObserver(() => {
+            if (!container.querySelector('#video-canvas')) {
+                stop();
+                if (audioUrl) URL.revokeObjectURL(audioUrl);
+                obs.disconnect();
+            }
+        });
+        obs.observe(container, { childList: true, subtree: true });
+    }
+
+    function showBikFallbackPreview(container, data, filename, errorMsg) {
         let info;
         try {
             info = H3.BinkHeader.parse(data instanceof Uint8Array ? data : new Uint8Array(data));
@@ -1497,7 +1756,7 @@
                 <div class="preview-body" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;">
                     <div style="font-size:64px;">🎥</div>
                     <div style="text-align:center; color:var(--text-muted); font-size:13px;">
-                        <p><strong>Bink Video</strong> — playback not supported in browser</p>
+                        <p><strong>Bink Video</strong> — decode failed: ${escapeHtml(errorMsg)}</p>
                         <p>${info.width}×${info.height} • ${info.nframes} frames • ${info.fps.toFixed(1)} fps</p>
                         <p style="margin-top:8px;">${escapeHtml(audioDesc)}</p>
                         <p style="margin-top:8px;">Use the export button to save and play with VLC or ffplay.</p>
@@ -2165,7 +2424,7 @@
                     showLoading(`Parsing ${basename}...`, -1);
                     const archive = await H3.LodFile.open(lodData);
                     const displayName = basename + ' (Demo)';
-                    state.archives.set(displayName, { archive, type: 'lod' });
+                    state.archives.set(displayName, { archive, type: 'lod', data: lodData });
                 }
             }
 
@@ -2253,34 +2512,36 @@
 
             // Extract files
             let extracted = 0;
-            const totalChunks = targetFiles.reduce((s, f) => s + f.info.chunkCount, 0);
-            let doneChunks = 0;
+            const totalFiles = targetFiles.length;
 
             for (const { name, info } of targetFiles) {
-                showLoading(`Extracting ${name}...`, doneChunks / totalChunks);
+                showLoading(`Extracting ${name}...`, extracted / totalFiles);
 
                 const data = await InnoExtract.extractFile(sourceFile, effectiveDataOffset, dataEntries, info, (done, total) => {
-                    showLoading(`Extracting ${name}... (${done}/${total})`, (doneChunks + done) / totalChunks);
+                    showLoading(`Extracting ${name}...`, (extracted + done / total) / totalFiles);
                 });
 
-                doneChunks += info.chunkCount;
+                if (data.length === 0) {
+                    extracted++;
+                    continue;
+                }
 
                 // Parse based on extension
                 const ext = name.split('.').pop().toLowerCase();
-                showLoading(`Parsing ${name}...`, doneChunks / totalChunks);
+                showLoading(`Parsing ${name}...`, extracted / totalFiles);
 
                 if (ext === 'lod') {
                     const archive = await H3.LodFile.open(data);
                     const displayName = name + ' (GOG)';
-                    state.archives.set(displayName, { archive, type: 'lod' });
+                    state.archives.set(displayName, { archive, type: 'lod', data });
                 } else if (ext === 'snd') {
                     const archive = await H3.SndFile.open(data);
                     const displayName = name + ' (GOG)';
-                    state.archives.set(displayName, { archive, type: 'snd' });
+                    state.archives.set(displayName, { archive, type: 'snd', data });
                 } else if (ext === 'vid') {
                     const archive = await H3.VidFile.open(data);
                     const displayName = name + ' (GOG)';
-                    state.archives.set(displayName, { archive, type: 'vid' });
+                    state.archives.set(displayName, { archive, type: 'vid', data });
                 } else {
                     const displayName = name + ' (GOG)';
                     state.standaloneFiles.set(displayName, { data, type: ext });
@@ -2448,6 +2709,24 @@
         initRefs();
         setupFileInput();
 
+        // Drag & drop on the whole page
+        const mainContent = $('#main-content');
+        mainContent.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            mainContent.classList.add('drag-over');
+        });
+        mainContent.addEventListener('dragleave', (e) => {
+            if (!mainContent.contains(e.relatedTarget)) {
+                mainContent.classList.remove('drag-over');
+            }
+        });
+        mainContent.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            mainContent.classList.remove('drag-over');
+            await processFiles(e.dataTransfer.files);
+        });
+
         // Nav buttons
         $$('.nav-btn').forEach(btn => {
             btn.addEventListener('click', () => setMode(btn.dataset.mode));
@@ -2461,6 +2740,10 @@
         // Demo download
         $('#btn-download-demo').addEventListener('click', downloadDemo);
         $('#welcome-demo').addEventListener('click', downloadDemo);
+
+        // Archive download buttons
+        els.btnDownloadOriginal.addEventListener('click', downloadArchiveOriginal);
+        els.btnDownloadZip.addEventListener('click', downloadArchiveAsZip);
 
         // Archive switcher
         els.archiveSelect.addEventListener('change', async () => {

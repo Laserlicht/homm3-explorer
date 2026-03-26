@@ -1,6 +1,10 @@
 // ============================================================
 // LZMA2 Decoder - Pure JavaScript implementation
 // Based on the 7-Zip LZMA SDK by Igor Pavlov
+// (https://www.7-zip.org/sdk.html) - Public Domain
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 HoMM3 Explorer Contributors
 // ============================================================
 
 const LZMA2Decode = (function () {
@@ -283,7 +287,8 @@ const LZMA2Decode = (function () {
                 const matchByte = matchMode ? outWindow.getByte(lzmaState.rep0) : 0;
                 prevByte = decodeLiteral(rc, litProbs, matchMode, matchByte);
                 outWindow.putByte(prevByte);
-                output[outPos + (uncompressedSize - remaining)] = prevByte;
+                const writeIdx = outPos + (uncompressedSize - remaining);
+                if (writeIdx < output.length) output[writeIdx] = prevByte;
                 lzmaState.state = stateUpdateLit(lzmaState.state);
                 remaining--;
             } else {
@@ -296,7 +301,8 @@ const LZMA2Decode = (function () {
                             lzmaState.state = stateUpdateShortRep(lzmaState.state);
                             prevByte = outWindow.getByte(lzmaState.rep0);
                             outWindow.putByte(prevByte);
-                            output[outPos + (uncompressedSize - remaining)] = prevByte;
+                            const writeIdx = outPos + (uncompressedSize - remaining);
+                            if (writeIdx < output.length) output[writeIdx] = prevByte;
                             remaining--;
                             continue;
                         }
@@ -347,8 +353,8 @@ const LZMA2Decode = (function () {
                     const available = outWindow.full ? outWindow.size : outWindow.pos;
                     if (lzmaState.rep0 >= available) {
                         if (lzmaState.rep0 === 0xFFFFFFFF) {
-                            // End marker
-                            return;
+                            // End marker — return actual bytes written
+                            return uncompressedSize - remaining;
                         }
                         throw new Error('LZMA: invalid distance ' + lzmaState.rep0 + ' >= ' + available);
                     }
@@ -359,11 +365,13 @@ const LZMA2Decode = (function () {
                 for (let i = 0; i < len && remaining > 0; i++) {
                     prevByte = outWindow.getByte(lzmaState.rep0);
                     outWindow.putByte(prevByte);
-                    output[writePos + i] = prevByte;
+                    const writeIdx = writePos + i;
+                    if (writeIdx < output.length) output[writeIdx] = prevByte;
                     remaining--;
                 }
             }
         }
+        return uncompressedSize;
     }
 
     // ---- LZMA2 Decoder ----
@@ -467,5 +475,34 @@ const LZMA2Decode = (function () {
         return output;
     }
 
-    return { decompress };
+    // Raw LZMA1 decompression (no LZMA2 container)
+    function decompressRaw(data, uncompressedSize, lc, lp, pb, dictSize) {
+        const output = new Uint8Array(uncompressedSize);
+        const outWindow = new OutWindow(dictSize);
+        const lzmaState = new LzmaState(lc, lp, pb, dictSize);
+        lzmaState.initState();
+        const rc = new RangeDecoder(data, 0);
+        decodeLzmaBlock(lzmaState, outWindow, rc, uncompressedSize, output, 0);
+        return output;
+    }
+
+    // LZMA1 decompression from standard header: props(1) + dictSize(4) + data
+    // Uncompressed size unknown — uses end-of-stream marker
+    function decompressLzma1(data) {
+        const propsByte = data[0];
+        const pb = Math.floor(propsByte / 45);
+        const lp = Math.floor((propsByte % 45) / 9);
+        const lc = propsByte % 9;
+        const dictSize = (data[1] | (data[2] << 8) | (data[3] << 16) | ((data[4] << 24) >>> 0)) || 65536;
+        const maxSize = Math.max(dictSize * 16, data.length * 20);
+        const output = new Uint8Array(maxSize);
+        const outWindow = new OutWindow(dictSize);
+        const lzmaState = new LzmaState(lc, lp, pb, dictSize);
+        lzmaState.initState();
+        const rc = new RangeDecoder(data, 5);
+        const actualSize = decodeLzmaBlock(lzmaState, outWindow, rc, maxSize, output, 0);
+        return output.subarray(0, actualSize);
+    }
+
+    return { decompress, decompressRaw, decompressLzma1 };
 })();
