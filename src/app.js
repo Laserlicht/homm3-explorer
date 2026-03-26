@@ -50,7 +50,10 @@
         thumbAnimTimers: [],
 
         // Show image borders
-        showBorders: false
+        showBorders: false,
+
+        // Active video/audio cleanup callback
+        activeVideoCleanup: null
     };
 
     // ---- DOM refs ----
@@ -760,6 +763,12 @@
     async function selectFile(file) {
         state.selectedFile = file;
 
+        // Stop any playing video/audio from the previous preview
+        if (state.activeVideoCleanup) {
+            state.activeVideoCleanup();
+            state.activeVideoCleanup = null;
+        }
+
         // Highlight selection
         $$('.file-item', els.fileList).forEach(el => {
             el.classList.toggle('selected', el.dataset.filename === file.name);
@@ -1438,10 +1447,18 @@
             exportBtn.addEventListener('click', () => exportBlob(new Blob([data]), exportName));
         }
 
+        // Register cleanup for file switching (stop audio immediately)
+        state.activeVideoCleanup = () => {
+            if (audioEl) { audioEl.pause(); audioEl.src = ''; }
+            URL.revokeObjectURL(url);
+        };
+
         // Clean up blob URL when preview changes
         const obs = new MutationObserver(() => {
             if (!container.querySelector('audio')) {
+                if (audioEl) { audioEl.pause(); audioEl.src = ''; }
                 URL.revokeObjectURL(url);
+                state.activeVideoCleanup = null;
                 obs.disconnect();
             }
         });
@@ -1581,11 +1598,18 @@
         renderFrame(0);
         play();
 
+        // Register cleanup for file switching
+        state.activeVideoCleanup = () => {
+            stop();
+            if (audioUrl) URL.revokeObjectURL(audioUrl);
+        };
+
         // Cleanup on preview change
         const obs = new MutationObserver(() => {
             if (!container.querySelector('#video-canvas')) {
                 stop();
                 if (audioUrl) URL.revokeObjectURL(audioUrl);
+                state.activeVideoCleanup = null;
                 obs.disconnect();
             }
         });
@@ -1716,11 +1740,21 @@
         renderFrame(0);
         play();
 
+        renderFrame(0);
+        play();
+
+        // Register cleanup for file switching
+        state.activeVideoCleanup = () => {
+            stop();
+            if (audioUrl) URL.revokeObjectURL(audioUrl);
+        };
+
         // Cleanup on preview change
         const obs = new MutationObserver(() => {
             if (!container.querySelector('#video-canvas')) {
                 stop();
                 if (audioUrl) URL.revokeObjectURL(audioUrl);
+                state.activeVideoCleanup = null;
                 obs.disconnect();
             }
         });

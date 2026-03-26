@@ -1856,6 +1856,9 @@ class BinkAudioDecoder {
 
         // Decode all blocks from the packet
         while (bits.bitsLeft(totalBits) > 32) {
+            // DCT mode: skip 2-bit float block type at start of each block
+            if (this.useDCT) bits.bits(2);
+
             let chOffset = 0;
             const blockOutputs = [];
 
