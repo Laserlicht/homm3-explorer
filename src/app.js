@@ -517,7 +517,9 @@
         state.fileList = list.map(name => {
             const ext = H3.getFileExtension(name);
             const category = H3.getFileCategory(name);
-            return { name, ext, category };
+            // SND archives contain wav entries without file extensions
+            const isAudio = state.archiveType === 'snd' && !ext;
+            return { name, ext, category, isAudio };
         });
         state.fileList.sort((a, b) => a.name.localeCompare(b.name));
         updateExtFilter();
@@ -691,7 +693,7 @@
                     iconDiv.textContent = getFileIcon(file.ext);
                     iconDiv.dataset.lazyThumb = file.name;
                 } else {
-                    iconDiv.textContent = getFileIcon(file.ext);
+                    iconDiv.textContent = file.isAudio ? '🔊' : getFileIcon(file.ext);
                 }
 
                 const nameDiv = document.createElement('div');
@@ -701,8 +703,9 @@
                 item.appendChild(iconDiv);
                 item.appendChild(nameDiv);
             } else {
+                const icon = file.isAudio ? '🔊' : getFileIcon(file.ext);
                 item.innerHTML = `
-                    <span class="file-item-icon">${getFileIcon(file.ext)}</span>
+                    <span class="file-item-icon">${icon}</span>
                     <span class="file-item-name">${escapeHtml(file.name)}</span>
                     <span class="file-item-ext ext-${file.ext}">${file.ext}</span>
                 `;
@@ -1850,23 +1853,13 @@
                 <div class="preview-body" style="align-items:center; justify-content:center;">
                     <div style="text-align:center;">
                         <div style="font-size:48px; margin-bottom:16px;">🔊</div>
-                        <audio controls src="${url}" style="width:100%; max-width:400px;"></audio>
-                        <div id="audio-error-msg" style="display:none; margin-top:12px; color:var(--text-muted); font-size:12px;">
-                            Playback not supported. Use the export button to download the file.
-                        </div>
+                        <audio controls autoplay src="${url}" style="width:100%; max-width:400px;"></audio>
                     </div>
                 </div>
             </div>
         `;
 
-        // Error handler for unsupported audio codecs
         const audioEl = container.querySelector('audio');
-        if (audioEl) {
-            audioEl.addEventListener('error', () => {
-                const errMsg = container.querySelector('#audio-error-msg');
-                if (errMsg) errMsg.style.display = '';
-            });
-        }
 
         const exportBtn = container.querySelector('#audio-export-btn');
         if (exportBtn) {
