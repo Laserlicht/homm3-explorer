@@ -305,6 +305,166 @@ const PCX = {
 };
 
 // ============================================================
+// PAL File Parser
+// ============================================================
+// Three palette formats exist in HoMM3:
+//   1. RIFF PAL (PLAYERS.PAL):  24-byte RIFF header + 256×4 bytes (R,G,B,flags), 8-bit values
+//   2. DEF-embedded palette:    raw 256×3 bytes at offset 16 in .DEF files, 8-bit values
+//   3. NEUTRAL.PAL (raw):       32×4 bytes raw binary, no header, 8-bit values
+//
+// For PLAYERS.PAL the file also contains HoMM3-specific RIFF sub-chunks after the main
+// palette data: "offl" (player color offsets), "tran" (transparency indices),
+// "unde" (underline indices). These are 32 bytes each including the 8-byte RIFF sub-header.
+const PAL = {
+    // Detect format from first 4 bytes
+    _isRiff(data) {
+        return data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46; // "RIFF"
+    },
+
+    // Parse a Windows RIFF PAL file (e.g. PLAYERS.PAL)
+    // Returns { colors: [[r,g,b], ...], flags: [uint8, ...], count: number, type: 'riff' }
+    readRiff(data) {
+        const r = new DataView2(data);
+        const magic = r.readString(4);
+        if (magic !== 'RIFF') throw new Error('Not a RIFF PAL file');
+        r.seek(22);
+        const count = r.readUint16LE(); // LOGPALETTE entry count (256 for PLAYERS.PAL)
+        const colors = [];
+        const flags = [];
+        for (let i = 0; i < count; i++) {
+            colors.push([r.readUint8(), r.readUint8(), r.readUint8()]);
+            flags.push(r.readUint8()); // NOT alpha — game-specific flags byte
+        }
+        return { colors, flags, count, type: 'riff' };
+    },
+
+    // Parse a DEF-embedded raw palette (256×3 bytes at a given offset)
+    readDefPalette(data, offset = 16) {
+        const colors = [];
+        for (let i = 0; i < 256; i++) {
+            colors.push([
+                data[offset + i * 3 + 0],
+                data[offset + i * 3 + 1],
+                data[offset + i * 3 + 2]
+            ]);
+        }
+        return { colors, flags: null, count: 256, type: 'def' };
+    },
+
+    // Auto-detect and parse any HoMM3 PAL format
+    parse(data) {
+        if (this._isRiff(data)) return this.readRiff(data);
+        if (data.length === 768) return this.readDefPalette(data, 0);
+        if (data.length === 128) {
+            // NEUTRAL.PAL: 32 entries × 4 bytes raw
+            const colors = [], flags = [];
+            for (let i = 0; i < 32; i++) {
+                colors.push([data[i * 4], data[i * 4 + 1], data[i * 4 + 2]]);
+                flags.push(data[i * 4 + 3]);
+            }
+            return { colors, flags, count: 32, type: 'raw' };
+        }
+        throw new Error('Unknown PAL format (size=' + data.length + ')');
+    }
+};
+
+// ============================================================
+// IFR File Parser (Immersion Force Resource)
+// ============================================================
+// Haptic feedback effect library used in HoMM3 SoD (H3SHAD.IFR in H3bitmap.lod).
+// Created by Immersion Studio. Magic: "ifpr".
+//
+// File layout:
+//   [0]  4 bytes  magic "ifpr"
+//   [4]  uint32   entry count (165 in H3SHAD.IFR)
+//   [8]  entries  (variable-length, self-inclusive sizes)
+//
+// Each entry:
+//   uint32       recSize  — total record size including this 4-byte field
+//   cstring      name     — effect name (e.g. "GuiPop", "Mirth A", "BlindSpell")
+//   cstring      type     — "Periodic" | "Vector Force" | "Damper" | "Compound"
+//   byte         0x00     — separator byte
+//   uint32       blockSize — self-inclusive; covers block data below
+//   cstring[]    block data — key\0value\0 pairs:
+//                  all types: ID = Windows GUID {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+//                  Compound only: ContainedObjects = GUID;GUID;... (semicolon-separated)
+//   cstring[]    parameter key\0value\0 pairs (all numeric ASCII decimals):
+//                  Periodic:     Magnitude, Period, Waveform, Duration, Phase, Direction,
+//                                AttackLevel, AttackDuration, FadeLevel, FadeDuration,
+//                                InfiniteDuration, TriggerButton, ValueOffset, StartDelay
+//                  Vector Force: Magnitude, Direction, Duration, AttackLevel, AttackDuration,
+//                                FadeLevel, FadeDuration, InfiniteDuration, TriggerButton,
+//                                RepeatInterval, StartDelay
+//                  Damper:       Axes, BothAxes, Offset, Offset2, DeadBand, DeadBand2,
+//                                NegCoefficient, NegCoefficient2, PosCoefficient, PosCoefficient2,
+//                                Symmetry, Symmetry2, Duration, InfiniteDuration
+//                  Compound:     (no additional params; sub-effects via ContainedObjects)
+const IFR = {
+    parse(data) {
+        if (data[0] !== 0x69 || data[1] !== 0x66 || data[2] !== 0x70 || data[3] !== 0x72) {
+            throw new Error('Not an IFR file (wrong magic, expected "ifpr")');
+        }
+        const r = new DataView2(data);
+        r.seek(4);
+        const count = r.readUint32LE();
+        const effects = [];
+
+        for (let i = 0; i < count; i++) {
+            const recStart = r.tell();
+            const recSize = r.readUint32LE();
+            const recEnd = recStart + recSize;
+
+            const name = IFR._cstr(data, r);
+            const type = IFR._cstr(data, r);
+            r.readUint8(); // separator 0x00
+
+            // Block section: self-inclusive blockSize covering ID / ContainedObjects
+            const blockSize = r.readUint32LE();
+            const blockEnd = r.tell() + (blockSize - 4); // -4: uint32 itself already read
+            const blockProps = {};
+            while (r.tell() < blockEnd) {
+                const k = IFR._cstr(data, r);
+                if (k === '') break;
+                blockProps[k] = IFR._cstr(data, r);
+            }
+            r.seek(blockEnd);
+
+            // Remaining key-value parameter pairs
+            const props = {};
+            while (r.tell() < recEnd) {
+                const k = IFR._cstr(data, r);
+                if (k === '') break;
+                props[k] = IFR._cstr(data, r);
+            }
+
+            effects.push({
+                name,
+                type,
+                id: blockProps['ID'] || null,
+                containedObjects: blockProps['ContainedObjects']
+                    ? blockProps['ContainedObjects'].split(';').filter(s => s)
+                    : null,
+                props
+            });
+
+            r.seek(recEnd); // advance to next record
+        }
+
+        return effects;
+    },
+
+    _cstr(data, r) {
+        let s = '';
+        while (r.tell() < data.length) {
+            const b = r.readUint8();
+            if (b === 0) break;
+            s += String.fromCharCode(b);
+        }
+        return s;
+    }
+};
+
+// ============================================================
 // DEF File Parser
 // ============================================================
 const DEF_FILE_TYPES = {
@@ -1597,6 +1757,7 @@ function getFileCategory(filename) {
         case 'msk': return 'data';
         case 'fnt': return 'font';
         case 'pal': return 'palette';
+        case 'ifr': return 'haptic';
         case 'h3m': return 'map';
         case 'h3c': return 'campaign';
         default: return 'binary';
@@ -1607,6 +1768,8 @@ function getFileCategory(filename) {
 window.H3 = {
     LodFile,
     PCX,
+    PAL,
+    IFR,
     DefFile,
     PakFile,
     SndFile,

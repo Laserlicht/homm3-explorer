@@ -140,6 +140,7 @@
             case 'msk': return '🎭';
             case 'fnt': return '🔤';
             case 'pal': return '🎨';
+            case 'ifr': return '📳';
             case 'h3m': return '🗺️';
             case 'h3c': return '⚔️';
             case 'pak-sheet': return '🗂️';
@@ -843,6 +844,20 @@
                 } else if (ext === 'fnt' && H3.FNT.isFnt(data)) {
                     const font = H3.FNT.readFnt(data);
                     showFntPreview(preview, font, file.name, data);
+                } else if (ext === 'pal') {
+                    try {
+                        const pal = H3.PAL.parse(data);
+                        showPalPreview(preview, pal, file.name, data);
+                    } catch (_) {
+                        showBinaryPreview(preview, data, file.name);
+                    }
+                } else if (ext === 'ifr') {
+                    try {
+                        const effects = H3.IFR.parse(data);
+                        showIfrPreview(preview, effects, file.name, data);
+                    } catch (_) {
+                        showBinaryPreview(preview, data, file.name);
+                    }
                 } else if (ext === 'txt' || ext === 'xls' || ext === 'csv') {
                     showTextPreview(preview, data, file.name);
                 } else if (ext === 'wav' || (ext === '' && isWavData(data))) {
@@ -1374,6 +1389,211 @@
         container.querySelector('#text-save-btn').addEventListener('click', () => {
             exportBlob(new Blob([data], { type: 'text/plain' }), filename);
         });
+    }
+
+    // ---- PAL Preview ----
+    function showPalPreview(container, pal, filename, rawData) {
+        const swatchSize = pal.count <= 32 ? 48 : 24;
+        const cols = pal.count <= 32 ? 8 : 16;
+        const rows = Math.ceil(pal.count / cols);
+
+        // Build the swatch canvas
+        function buildCanvas(zoom) {
+            const sz = swatchSize * zoom;
+            const cv = document.createElement('canvas');
+            cv.width = cols * sz;
+            cv.height = rows * sz;
+            cv.style.imageRendering = 'pixelated';
+            const ctx = cv.getContext('2d');
+            pal.colors.forEach(([r, g, b], idx) => {
+                const col = idx % cols;
+                const row = Math.floor(idx / cols);
+                ctx.fillStyle = `rgb(${r},${g},${b})`;
+                ctx.fillRect(col * sz, row * sz, sz, sz);
+            });
+            return cv;
+        }
+
+        // Tooltip canvas (1px per swatch absolute coords)
+        let currentZoom = 2;
+        let currentCanvas = buildCanvas(currentZoom);
+
+        // Info table rows
+        const tableRows = pal.colors.map(([r, g, b], idx) => {
+            const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+            const flag = pal.flags ? pal.flags[idx] : '';
+            return `<tr>
+                <td style="width:24px;"><div style="width:20px;height:14px;background:${hex};border:1px solid var(--border);border-radius:2px;"></div></td>
+                <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">${idx}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;">${hex}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;">R=${r} G=${g} B=${b}</td>
+                ${pal.flags !== null ? `<td style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);">flags=0x${flag.toString(16).padStart(2,'0')}</td>` : ''}
+            </tr>`;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${pal.count} colors</span>
+                        <span>${pal.type.toUpperCase()} PAL</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <button data-zoom="1" title="1×">1×</button>
+                        <button data-zoom="2" title="2×">2×</button>
+                        <button data-zoom="4" title="4×">4×</button>
+                        <button id="pal-view-toggle" title="Toggle table view">≡ Table</button>
+                        <button id="pal-export-png" title="Export as PNG">💾 PNG</button>
+                        ${rawData ? '<button id="pal-export-orig" title="Export original PAL">💾 PAL</button>' : ''}
+                    </div>
+                </div>
+                <div id="pal-body" class="preview-body checkerboard" style="flex-direction:column;gap:0;align-items:flex-start;justify-content:flex-start;padding:16px;overflow:auto;"></div>
+                <div id="pal-table-body" class="preview-body" style="display:none;flex-direction:column;padding:0;align-items:flex-start;justify-content:flex-start;overflow:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                        <thead><tr style="position:sticky;top:0;background:var(--bg-secondary);z-index:1;">
+                            <th style="padding:6px 10px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">Swatch</th>
+                            <th style="padding:6px 10px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">#</th>
+                            <th style="padding:6px 10px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">Hex</th>
+                            <th style="padding:6px 10px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">RGB</th>
+                            ${pal.flags !== null ? '<th style="padding:6px 10px;text-align:left;color:var(--text-muted);border-bottom:1px solid var(--border);">Flags</th>' : ''}
+                        </tr></thead>
+                        <tbody id="pal-tbody">${tableRows}</tbody>
+                    </table>
+                </div>
+                <div id="pal-tooltip" style="display:none;position:fixed;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px;font-size:11px;font-family:var(--font-mono);pointer-events:none;z-index:999;box-shadow:var(--shadow-lg);"></div>
+            </div>
+        `;
+
+        const body = container.querySelector('#pal-body');
+        const tableBody = container.querySelector('#pal-table-body');
+        const tooltip = container.querySelector('#pal-tooltip');
+        let showTable = false;
+
+        body.appendChild(currentCanvas);
+
+        // Zoom buttons
+        container.querySelectorAll('.preview-toolbar button[data-zoom]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                currentZoom = parseInt(btn.dataset.zoom);
+                const next = buildCanvas(currentZoom);
+                currentCanvas.replaceWith(next);
+                currentCanvas = next;
+                attachCanvasEvents(next);
+            });
+        });
+
+        // Table toggle
+        container.querySelector('#pal-view-toggle').addEventListener('click', () => {
+            showTable = !showTable;
+            body.style.display = showTable ? 'none' : 'flex';
+            tableBody.style.display = showTable ? 'flex' : 'none';
+        });
+
+        // Export PNG
+        container.querySelector('#pal-export-png').addEventListener('click', () => {
+            const cv = buildCanvas(4);
+            exportCanvasAsPng(cv, filename.replace(/\.[^.]+$/, '_palette.png'));
+        });
+        const origBtn = container.querySelector('#pal-export-orig');
+        if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+
+        // Hover tooltip on canvas
+        function attachCanvasEvents(cv) {
+            const sz = swatchSize * currentZoom;
+            cv.addEventListener('mousemove', (e) => {
+                const rect = cv.getBoundingClientRect();
+                const col = Math.floor((e.clientX - rect.left) / sz);
+                const row = Math.floor((e.clientY - rect.top) / sz);
+                const idx = row * cols + col;
+                if (idx < 0 || idx >= pal.count) { tooltip.style.display = 'none'; return; }
+                const [r, g, b] = pal.colors[idx];
+                const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+                const flagStr = pal.flags !== null ? `  flags=0x${pal.flags[idx].toString(16).padStart(2,'0')}` : '';
+                tooltip.textContent = `#${idx}  ${hex}  R=${r} G=${g} B=${b}${flagStr}`;
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 14) + 'px';
+                tooltip.style.top = (e.clientY - 10) + 'px';
+            });
+            cv.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+        }
+        attachCanvasEvents(currentCanvas);
+    }
+
+    // ---- IFR Preview ----
+    function showIfrPreview(container, effects, filename, rawData) {
+        const typeBadgeColor = { 'Periodic': '#3fb950', 'Vector Force': '#d29922', 'Damper': '#a371f7', 'Compound': '#58a6ff' };
+
+        // Build a map: GUID → effect name for compound resolution
+        const guidMap = {};
+        effects.forEach(e => { if (e.id) guidMap[e.id] = e.name; });
+
+        function renderProps(props) {
+            return Object.entries(props).map(([k, v]) =>
+                `<tr><td style="padding:2px 8px 2px 0;color:var(--text-muted);white-space:nowrap;font-size:11px;">${escapeHtml(k)}</td>
+                     <td style="padding:2px 0;font-family:var(--font-mono);font-size:11px;">${escapeHtml(v)}</td></tr>`
+            ).join('');
+        }
+
+        const rows = effects.map((e, idx) => {
+            const color = typeBadgeColor[e.type] || '#8b949e';
+            const badge = `<span style="display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;background:${color}22;color:${color};border:1px solid ${color}44;white-space:nowrap;">${escapeHtml(e.type)}</span>`;
+            const children = e.containedObjects
+                ? `<div style="margin-top:4px;color:var(--text-muted);font-size:11px;">Contains: ${e.containedObjects.map(g => escapeHtml(guidMap[g] || g)).join(', ')}</div>`
+                : '';
+            const propTable = Object.keys(e.props).length
+                ? `<table style="margin-top:4px;border-collapse:collapse;">${renderProps(e.props)}</table>`
+                : '';
+            return `<div class="ifr-effect" data-idx="${idx}" style="padding:8px 14px;border-bottom:1px solid var(--border);cursor:pointer;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="font-size:12px;font-weight:600;flex:1;">${escapeHtml(e.name)}</span>
+                    ${badge}
+                    <span style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);">#${idx}</span>
+                </div>
+                <div class="ifr-details" style="display:none;margin-top:6px;">${children}${propTable}</div>
+            </div>`;
+        }).join('');
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${effects.length} effects</span>
+                        <span>iFeel IFR</span>
+                    </div>
+                    <div class="preview-toolbar">
+                        <input id="ifr-search" type="text" placeholder="Search…" style="width:120px;padding:3px 8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font:inherit;font-size:12px;outline:none;">
+                        ${rawData ? '<button id="ifr-export-orig" title="Export original IFR">💾 IFR</button>' : ''}
+                    </div>
+                </div>
+                <div class="preview-body" style="padding:0;align-items:flex-start;justify-content:flex-start;flex-direction:column;overflow:auto;">
+                    <div id="ifr-list" style="width:100%;">${rows}</div>
+                </div>
+            </div>
+        `;
+
+        // Expand/collapse on click
+        container.querySelector('#ifr-list').addEventListener('click', (e) => {
+            const row = e.target.closest('.ifr-effect');
+            if (!row) return;
+            const details = row.querySelector('.ifr-details');
+            details.style.display = details.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Search filter
+        container.querySelector('#ifr-search').addEventListener('input', (e) => {
+            const q = e.target.value.toLowerCase();
+            container.querySelectorAll('.ifr-effect').forEach(row => {
+                const idx = parseInt(row.dataset.idx);
+                const ef = effects[idx];
+                const match = !q || ef.name.toLowerCase().includes(q) || ef.type.toLowerCase().includes(q);
+                row.style.display = match ? '' : 'none';
+            });
+        });
+
+        const origBtn = container.querySelector('#ifr-export-orig');
+        if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
 
     function showBinaryPreview(container, data, filename) {
