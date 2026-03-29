@@ -409,8 +409,16 @@ const InnoExtract = (function () {
         return new Uint8Array(decompressed.subarray(fileOffset, fileOffset + fileSize));
     }
 
+    // Fast check: reads only LOADER_MAGIC offset + 4 bytes, no LZMA parse
+    function getDataOffset(exeData) {
+        const loaderOff = findBytes(exeData, LOADER_MAGIC, 0);
+        if (loaderOff < 0) return -1;
+        return readUint32LE(exeData, loaderOff + 36);
+    }
+
     return {
         isHeroes3Installer,
+        getDataOffset,
         parseExe,
         extractFile,
         TARGET_EXTS

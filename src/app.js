@@ -1328,6 +1328,7 @@
                     </div>
                     <div class="preview-toolbar">
                         ${buildEncodingSelectHtml(detectedEnc)}
+                        <button id="text-save-btn" title="Save file">💾</button>
                     </div>
                 </div>
                 <div class="preview-body" style="align-items:flex-start; justify-content:flex-start;">
@@ -1339,6 +1340,9 @@
         container.querySelector('#text-encoding-select').addEventListener('change', (e) => {
             state.textEncoding = e.target.value;
             showTextPreview(container, data, filename);
+        });
+        container.querySelector('#text-save-btn').addEventListener('click', () => {
+            exportBlob(new Blob([data], { type: 'text/plain' }), filename);
         });
     }
 
@@ -2676,26 +2680,31 @@
                 return;
             }
 
-            showLoading('Analyzing installer...', -1);
-            const { dataEntries, fileMap, dataOffset } = InnoExtract.parseExe(exeData);
+            // Fast check: is data embedded in EXE or in external BIN?
+            // Done before the slow LZMA parse so the BIN dialog appears instantly.
+            const quickDataOffset = InnoExtract.getDataOffset(exeData);
 
-            // Determine source file: self-contained EXE (dataOffset > 0) or external BIN
             let sourceFile;
             let effectiveDataOffset;
 
-            if (dataOffset > 0) {
+            if (quickDataOffset > 0) {
                 // Self-contained: data is inside the EXE
                 sourceFile = file;
-                effectiveDataOffset = dataOffset;
+                effectiveDataOffset = quickDataOffset;
             } else {
-                // External BIN needed
+                // External BIN needed — ask immediately, before the slow parse
                 hideLoading();
                 const binFile = await askForBinFile(file.name);
                 if (!binFile) return;
                 sourceFile = binFile;
                 effectiveDataOffset = 0;
-                showLoading('Analyzing installer...', -1);
             }
+
+            showLoading('Analyzing installer...', -1);
+            // Double rAF: guarantees the loading bar is actually painted before
+            // parseExe blocks the main thread with synchronous LZMA work.
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const { dataEntries, fileMap } = InnoExtract.parseExe(exeData);
 
             // Collect all target files (LOD, SND, VID)
             const targetFiles = [];
@@ -2799,7 +2808,7 @@
                     <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">HoMM3 GOG installer detected!</h2>
                     <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
                         The associated BIN file is needed to extract the game data.<br>
-                        Please select <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">${escapeHtml(expectedBin)}</code> from the same directory.
+                        Please select <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px; word-break:break-all;">${escapeHtml(expectedBin)}</code> from the same directory.
                     </p>
                     <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
                         <button id="bin-select-btn" class="welcome-btn primary" style="width:100%; justify-content:center;">
@@ -2937,6 +2946,26 @@
         // Nav buttons
         $$('.nav-btn').forEach(btn => {
             btn.addEventListener('click', () => setMode(btn.dataset.mode));
+        });
+
+        // Logo click: back to welcome / reset
+        $('.logo').addEventListener('click', () => {
+            state.archive = null;
+            state.archiveName = '';
+            state.archiveType = '';
+            state.archives.clear();
+            state.fileList = [];
+            state.selectedFile = null;
+            state.defFiles = [];
+            state.pcxFiles = [];
+            state.standaloneFiles.clear();
+            state.thumbCache.clear();
+            clearThumbAnimTimers();
+            if (state.activeVideoCleanup) { state.activeVideoCleanup(); state.activeVideoCleanup = null; }
+            state.lastTextData = null;
+            state.textEncoding = 'auto';
+            updateArchiveSelector();
+            setMode('explorer');
         });
 
         // Open file buttons
