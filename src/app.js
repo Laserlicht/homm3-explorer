@@ -368,8 +368,45 @@
     }
 
     // ---- File input handling ----
+    function resetState() {
+        // Stop active audio/video playback and revoke blob URLs
+        if (state.activeVideoCleanup) {
+            state.activeVideoCleanup();
+            state.activeVideoCleanup = null;
+        }
+        // Cancel all running thumbnail animation timers
+        clearThumbAnimTimers();
+
+        // Clear archive and file data
+        state.archive = null;
+        state.archiveName = '';
+        state.archiveType = '';
+        state.archives.clear();
+        state.fileList = [];
+        state.selectedFile = null;
+        state.standaloneFiles.clear();
+        state.defFiles = [];
+        state.pcxFiles = [];
+        state.thumbCache.clear();
+        state.lastTextData = null;
+
+        // Clear UI
+        if (els.explorerPreview) els.explorerPreview.innerHTML = '';
+        if (els.fileList) els.fileList.innerHTML = '';
+        if (els.fileSearch) els.fileSearch.value = '';
+        if (els.archiveName) els.archiveName.textContent = '';
+        if (els.archiveSelect) {
+            els.archiveSelect.innerHTML = '';
+            els.archiveSelect.style.display = 'none';
+        }
+
+        // Show welcome screen — setMode detects empty state and routes there
+        setMode('explorer');
+    }
+
     async function processFiles(files) {
         if (!files.length) return;
+        resetState();
 
         for (const file of files) {
             const ext = file.name.split('.').pop().toLowerCase();
