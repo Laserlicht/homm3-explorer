@@ -13,7 +13,7 @@ const InnoExtract = (function () {
     const LOADER_MAGIC = [0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0xCD, 0xE6, 0xD7, 0x7B, 0x0B, 0x2A];
 
     // Extensions to search for (case-insensitive)
-    const TARGET_EXTS = ['.lod', '.snd', '.vid'];
+    const TARGET_EXTS = ['.lod', '.snd', '.vid', '.mp3'];
 
     function isTargetFile(name) {
         const lower = name.toLowerCase();

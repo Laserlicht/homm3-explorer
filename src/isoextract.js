@@ -43,6 +43,14 @@ const ISOExtract = (function () {
         return TARGET_EXTS.some(ext => lower.endsWith(ext));
     }
 
+    // True if the file lives inside a directory literally named "mp3"
+    function isMp3InDir(filePath, fileName) {
+        if (!fileName.toLowerCase().endsWith('.mp3')) return false;
+        const parts = filePath.split('/');
+        // parts[-1] is the filename; check any parent segment
+        return parts.slice(0, -1).some(p => p.toLowerCase() === 'mp3');
+    }
+
     // Read a slice from a File object (returns Uint8Array)
     async function readFileSlice(file, offset, length) {
         const blob = file.slice(offset, offset + length);
@@ -375,6 +383,7 @@ const ISOExtract = (function () {
 
         // Separate into categories
         const directGameFiles = [];
+        const directMp3Files = [];
         const hdrFiles = [];
         const cabFiles = [];
 
@@ -382,6 +391,8 @@ const ISOExtract = (function () {
             const upper = f.name.toUpperCase();
             if (isTargetFile(f.name)) {
                 directGameFiles.push(f);
+            } else if (isMp3InDir(f.path, f.name)) {
+                directMp3Files.push({ name: f.name, lba: f.lba, size: f.size });
             } else if (upper.match(/^DATA\d+\.HDR$/)) {
                 hdrFiles.push(f);
             } else if (upper.match(/^DATA\d+\.CAB$/)) {
@@ -414,7 +425,13 @@ const ISOExtract = (function () {
             const targetFiles = parsed.files.filter(f =>
                 isTargetFile(f.name) && !(f.flags & FILE_INVALID) && f.dataOffset > 0
             );
-            if (targetFiles.length === 0) continue;
+            // Also collect mp3 files from the CAB (directory may be e.g. "{app}\MP3" or "MP3")
+            const cabMp3Files = parsed.files.filter(f =>
+                f.name.toLowerCase().endsWith('.mp3') &&
+                (f.directory || '').split(/[/\\]/).some(p => p.toLowerCase() === 'mp3') &&
+                !(f.flags & FILE_INVALID) && f.dataOffset > 0
+            );
+            if (targetFiles.length === 0 && cabMp3Files.length === 0) continue;
 
             // Read volume headers from all CABs
             const volumeHeaders = [];
@@ -444,11 +461,12 @@ const ISOExtract = (function () {
                 directory: dir,
                 hdr: parsed,
                 targetFiles,
+                cabMp3Files,
                 volumeHeaders
             });
         }
 
-        return { directGameFiles, cabSetups };
+        return { directGameFiles, cabSetups, directMp3Files };
     }
 
     // Public API

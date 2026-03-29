@@ -136,6 +136,7 @@
             case 'def': case 'd32': return '🎬';
             case 'txt': case 'xls': case 'csv': return '📄';
             case 'wav': case 'snd': return '🔊';
+            case 'mp3': return '🎵';
             case 'smk': case 'bik': return '🎥';
             case 'msk': return '🎭';
             case 'fnt': return '🔤';
@@ -305,7 +306,7 @@
         state.archiveName = name;
         state.archiveType = info.type;
         state.thumbCache.clear();
-        if (info.type === 'lod' || info.type === 'snd' || info.type === 'vid') buildFileList();
+        if (info.type === 'lod' || info.type === 'snd' || info.type === 'vid' || info.type === 'mp3') buildFileList();
         else if (info.type === 'pak') buildPakFileList();
     }
 
@@ -368,6 +369,24 @@
     }
 
     // ---- File input handling ----
+    // Virtual archive wrapping a Map<name, Uint8Array> — used for MP3 folders
+    // Virtual archive for MP3 folders — files are extracted lazily on first access
+    function createMp3Archive(entries) {
+        // entries: [{name, extract: async () => Uint8Array}]
+        const cache = new Map();
+        return {
+            getFilelist: () => entries.map(e => e.name).sort((a, b) => a.localeCompare(b)),
+            getFile: async name => {
+                if (cache.has(name)) return cache.get(name);
+                const entry = entries.find(e => e.name === name);
+                if (!entry) return null;
+                const data = await entry.extract();
+                if (data && data.length > 0) cache.set(name, data);
+                return data ?? null;
+            }
+        };
+    }
+
     function resetState() {
         // Stop active audio/video playback and revoke blob URLs
         if (state.activeVideoCleanup) {
@@ -555,7 +574,7 @@
             const ext = H3.getFileExtension(name);
             const category = H3.getFileCategory(name);
             // SND archives contain wav entries without file extensions
-            const isAudio = state.archiveType === 'snd' && !ext;
+            const isAudio = (state.archiveType === 'snd' && !ext) || ext === 'mp3';
             return { name, ext, category, isAudio };
         });
         state.fileList.sort((a, b) => a.name.localeCompare(b.name));
@@ -911,6 +930,12 @@
                 hideLoading();
                 if (!data) { showPreviewError(preview, 'File not found'); return; }
                 showAudioPreview(preview, data, file.name);
+            } else if (state.archiveType === 'mp3') {
+                showLoading('Loading file...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { showPreviewError(preview, 'File not found'); return; }
+                showAudioPreview(preview, data, file.name, 'audio/mpeg');
             } else if (state.archiveType === 'vid') {
                 showLoading('Loading file...');
                 const data = await state.archive.getFile(file.name);
@@ -1869,10 +1894,17 @@
         return data; // couldn't parse, pass through
     }
 
-    function showAudioPreview(container, data, filename) {
-        const audioData = ensurePlayableWav(data instanceof Uint8Array ? data : new Uint8Array(data));
-        const decoded = audioData !== data;
-        const blob = new Blob([audioData], { type: 'audio/wav' });
+    function showAudioPreview(container, data, filename, mimeType = 'audio/wav') {
+        let audioData, decoded = false;
+        if (mimeType === 'audio/wav') {
+            audioData = ensurePlayableWav(data instanceof Uint8Array ? data : new Uint8Array(data));
+            decoded = audioData !== data;
+        } else {
+            audioData = data instanceof Uint8Array ? data : new Uint8Array(data);
+        }
+        const metaLabel = mimeType === 'audio/mpeg' ? 'MP3' : decoded ? 'IMA ADPCM → PCM' : 'WAV Audio';
+        const icon = mimeType === 'audio/mpeg' ? '🎵' : '🔊';
+        const blob = new Blob([audioData], { type: mimeType });
         const url = URL.createObjectURL(blob);
 
         container.innerHTML = `
@@ -1881,7 +1913,7 @@
                     <span class="preview-filename">${escapeHtml(filename)}</span>
                     <div class="preview-meta">
                         <span>${formatSize(data.length)}</span>
-                        <span>${decoded ? 'IMA ADPCM → PCM' : 'WAV Audio'}</span>
+                        <span>${metaLabel}</span>
                     </div>
                     <div class="preview-toolbar">
                         <button id="audio-export-btn" title="Export file">💾</button>
@@ -1889,7 +1921,7 @@
                 </div>
                 <div class="preview-body" style="align-items:center; justify-content:center;">
                     <div style="text-align:center;">
-                        <div style="font-size:48px; margin-bottom:16px;">🔊</div>
+                        <div style="font-size:48px; margin-bottom:16px;">${icon}</div>
                         <audio controls autoplay src="${url}" style="width:100%; max-width:400px;"></audio>
                     </div>
                 </div>
@@ -2968,7 +3000,7 @@
 
             showLoading('Scanning ISO filesystem...', -1);
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-            const { directGameFiles, cabSetups } = await ISOExtract.scanIso(file);
+            const { directGameFiles, cabSetups, directMp3Files } = await ISOExtract.scanIso(file);
 
             const totalDirect = directGameFiles.length;
             let totalCab = 0;
@@ -3013,6 +3045,23 @@
                     }
                     extracted++;
                 }
+            }
+
+            // 3) Collect mp3 folder entries (lazy — extracted on demand when clicked)
+            const mp3Entries = [];
+            for (const mp3f of directMp3Files) {
+                const { name, lba, size } = mp3f;
+                mp3Entries.push({ name, extract: () => ISOExtract.extractIsoFile(file, lba, size) });
+            }
+            for (const setup of cabSetups) {
+                for (const fileDesc of (setup.cabMp3Files || [])) {
+                    const name = fileDesc.name;
+                    const vols = setup.volumeHeaders;
+                    mp3Entries.push({ name, extract: () => ISOExtract.extractIsCabFile(file, fileDesc, vols) });
+                }
+            }
+            if (mp3Entries.length > 0) {
+                state.archives.set('MP3 (ISO)', { archive: createMp3Archive(mp3Entries), type: 'mp3', data: null });
             }
 
             // Auto-open first bitmap LOD, then first archive
@@ -3191,13 +3240,14 @@
 
             if (targetFiles.length === 0) {
                 hideLoading();
-                toast('No LOD/SND/VID files found in installer.', 'error');
+                toast('No game files found in installer.', 'error');
                 return;
             }
 
             // Extract files
             let extracted = 0;
             const totalFiles = targetFiles.length;
+            const gogMp3Files = [];
 
             for (const { name, info } of targetFiles) {
                 showLoading(`Extracting ${name}...`, extracted / totalFiles);
@@ -3227,11 +3277,20 @@
                     const archive = await H3.VidFile.open(data);
                     const displayName = name + ' (GOG)';
                     state.archives.set(displayName, { archive, type: 'vid', data });
+                } else if (ext === 'mp3') {
+                    // Collect mp3 files into a dedicated virtual archive
+                    const mp3name = name.split('/').pop() || name;
+                    const mp3data = data;
+                    gogMp3Files.push({ name: mp3name, extract: async () => mp3data });
                 } else {
                     const displayName = name + ' (GOG)';
                     state.standaloneFiles.set(displayName, { data, type: ext });
                 }
                 extracted++;
+            }
+
+            if (gogMp3Files.length > 0) {
+                state.archives.set('MP3 (GOG)', { archive: createMp3Archive(gogMp3Files), type: 'mp3', data: null });
             }
 
             // Auto-open first bitmap LOD
