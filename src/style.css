@@ -937,6 +937,8 @@ body {
     justify-content: center;
     flex: 1;
     min-height: 200px;
+    touch-action: pan-y;
+    overscroll-behavior-x: contain;
     background-image:
         linear-gradient(45deg, #1a1e24 25%, transparent 25%),
         linear-gradient(-45deg, #1a1e24 25%, transparent 25%),
@@ -1234,11 +1236,142 @@ body {
 .ext-fnt { color: #768390; }
 .ext-pal { color: #768390; }
 
-/* ---- Responsive ---- */
+/* ---- Responsive: Tablet (≤ 768px) ---- */
 @media (max-width: 768px) {
+    /* Header: hide button/nav labels, compact spacing */
     .header-nav span { display: none; }
     .action-btn span { display: none; }
-    .explorer-sidebar { width: clamp(200px, 33.333vw, 50%); }
+
+    #header {
+        gap: 8px;
+        padding: 0 10px;
+        height: 46px;
+    }
+
+    .header-nav { margin-left: 8px; }
+    .header-right { gap: 4px; }
+    .action-btn { padding: 6px 8px; }
+
+    /* Explorer: vertical stack instead of side-by-side */
+    .explorer-layout {
+        flex-direction: column;
+    }
+
+    .explorer-sidebar {
+        width: 100% !important;
+        min-width: 0;
+        max-width: 100%;
+        height: 40vh;
+        min-height: 180px;
+        max-height: 50vh;
+        resize: vertical;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .resize-handle { display: none; }
+
+    .explorer-preview {
+        flex: 1;
+        min-height: 0;
+    }
+
+    /* DEF viewer: vertical stack */
+    .defviewer-layout {
+        flex-direction: column;
+    }
+
+    .defviewer-sidebar {
+        width: 100% !important;
+        min-width: 0;
+        max-width: 100%;
+        height: 40vh;
+        min-height: 180px;
+        max-height: 50vh;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    /* DEF controls: allow wrapping */
+    .def-controls .speed-control,
+    .def-controls .group-select,
+    .def-controls .render-mode {
+        margin-left: 0;
+    }
+    .def-controls .frame-info {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    /* Preview header: allow wrapping */
+    .preview-header {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 12px;
+    }
+    .preview-toolbar {
+        margin-left: 0;
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    /* Welcome screen: stack buttons */
+    .welcome-actions {
+        flex-direction: column;
+        align-items: center;
+    }
+    .welcome-formats { flex-wrap: wrap; }
+
+    /* Modal: more compact */
+    .modal-overlay { padding: 10px; }
+    .modal-box { padding: 20px 18px; max-height: 85vh; }
+}
+
+/* ---- Responsive: Phone (≤ 480px) ---- */
+@media (max-width: 480px) {
+    #header {
+        gap: 4px;
+        padding: 0 8px;
+        height: 42px;
+    }
+
+    .logo-text { display: none; }
+
+    .header-nav { margin-left: 4px; gap: 2px; }
+    .nav-btn { padding: 6px 8px; }
+
+    /* Welcome screen: smaller text */
+    .welcome-content h1 { font-size: 22px; }
+    .welcome-content h2 { font-size: 16px; }
+    .welcome-icon { font-size: 48px; }
+    .welcome-desc { font-size: 13px; }
+
+    /* Sidebar shorter */
+    .explorer-sidebar,
+    .defviewer-sidebar {
+        height: 35vh;
+        min-height: 150px;
+    }
+
+    /* Preview: less padding */
+    .preview-body { padding: 10px; }
+    .search-bar { padding: 6px 10px; }
+
+    /* Grid items narrower */
+    .grid-view .file-item { min-width: 70px; }
+
+    /* Toast: full width */
+    .toast-container { right: 10px; bottom: 10px; left: 10px; }
+    .toast { max-width: 100%; }
+
+    /* Modal: full-screen */
+    .modal-overlay { padding: 0; }
+    .modal-box {
+        max-width: 100%;
+        max-height: 100vh;
+        border-radius: 0;
+        padding: 16px 14px;
+    }
 }
 
 /* ---- Resize handle ---- */
