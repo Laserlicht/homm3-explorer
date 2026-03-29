@@ -363,7 +363,7 @@ body {
 }
 
 .sidebar-header-row .sidebar-title {
-    flex: 1;
+    flex-shrink: 1;
     min-width: 0;
 }
 
@@ -400,6 +400,8 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+    margin-left: auto;
+    flex-shrink: 0;
 }
 
 .archive-dl-btns {
@@ -839,6 +841,12 @@ body {
     background-position: 0 0, 0 10px, 10px -10px, -10px 0;
 }
 
+.preview-body.bg-white,
+.def-player.bg-white {
+    background: #ffffff;
+    background-image: none;
+}
+
 .preview-body canvas,
 .preview-body img {
     max-width: 100%;
@@ -870,7 +878,14 @@ body {
 }
 
 .defviewer-sidebar .sidebar-header {
-    flex-wrap: wrap;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+}
+
+.defviewer-sidebar .sidebar-header-row {
+    flex: 1;
+    flex-wrap: nowrap;
 }
 
 /* ---- DEF Viewer Layout ---- */

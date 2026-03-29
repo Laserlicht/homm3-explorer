@@ -52,6 +52,9 @@
         // Show image borders
         showBorders: false,
 
+        // White background mode (shared across all image/animation viewers)
+        whiteBg: false,
+
         // Active video/audio cleanup callback
         activeVideoCleanup: null,
 
@@ -496,8 +499,22 @@ self.onmessage = async function(e) {
 
     // ---- Hash TSV export ----
     function exportHashesTsv() {
-        const entries = [...state.sourceFiles.entries()];
-        if (entries.length === 0) { toast('No files loaded to hash.', 'warning'); return; }
+        // Build complete entry list: source archive/standalone files + all files inside archives
+        const allEntries = [];
+        for (const [name, { data, filetype }] of state.sourceFiles) {
+            const _data = data;
+            allEntries.push({ name, filetype, getData: () => Promise.resolve(_data) });
+        }
+        for (const [archName, { archive, type }] of state.archives) {
+            if (typeof archive.getFilelist !== 'function') continue;
+            const filelist = archive.getFilelist();
+            const ftLabel = type.toUpperCase() + ' entry';
+            for (const fname of filelist) {
+                const _arch = archive, _fn = fname;
+                allEntries.push({ name: archName + '/' + fname, filetype: ftLabel, getData: () => _arch.getFile(_fn) });
+            }
+        }
+        if (allEntries.length === 0) { toast('No files loaded to hash.', 'warning'); return; }
 
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
@@ -505,8 +522,8 @@ self.onmessage = async function(e) {
         overlay.innerHTML = `
             <div class="modal-box" style="max-width:460px; width:90%;">
                 <h2 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">&#35; Export Hashes</h2>
-                <p style="font-size:13px; color:var(--text-secondary); margin-bottom:6px;">Compute MD5 / SHA-1 / SHA-256 / SHA-512 for <strong>${entries.length}</strong> loaded file(s) and export as TSV.</p>
-                <p style="font-size:12px; color:var(--text-muted); margin-bottom:20px;">This may take a while for large files (ISO, LOD…).</p>
+                <p style="font-size:13px; color:var(--text-secondary); margin-bottom:6px;">Compute MD5 / SHA-1 / SHA-256 / SHA-512 for <strong>${allEntries.length}</strong> file(s) (archives + contents) and export as TSV.</p>
+                <p style="font-size:12px; color:var(--text-muted); margin-bottom:20px;">This may take a while for large archives with many files.</p>
                 <div style="display:flex; gap:10px; justify-content:flex-end;">
                     <button id="hash-confirm-cancel" style="padding:6px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-tertiary);color:var(--text-secondary);font:inherit;font-size:13px;cursor:pointer;">Cancel</button>
                     <button id="hash-confirm-ok" style="padding:6px 16px;border:1px solid var(--accent,#58a6ff);border-radius:var(--radius-sm);background:var(--accent,#58a6ff);color:#fff;font:inherit;font-size:13px;cursor:pointer;font-weight:600;">Hash &amp; Export</button>
@@ -518,19 +535,19 @@ self.onmessage = async function(e) {
         overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
         overlay.querySelector('#hash-confirm-ok').addEventListener('click', async () => {
             overlay.remove();
-            await _doExportHashesTsv(entries);
+            await _doExportHashesTsv(allEntries);
         });
     }
 
-    async function _doExportHashesTsv(entries) {
-        const total = entries.length;
+    async function _doExportHashesTsv(allEntries) {
+        const total = allEntries.length;
         const rows = [['Filename', 'Filetype', 'MD5', 'SHA-1', 'SHA-256', 'SHA-512']];
 
         showLoading('Computing hashes…', 0);
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
         // Run up to CONCURRENCY files in parallel, each in its own worker
-        const CONCURRENCY = Math.min(navigator.hardwareConcurrency || 4, 4);
+        const CONCURRENCY = Math.min(navigator.hardwareConcurrency || 4, 16);
         const results = new Array(total);
         let completedCount = 0;
         let nextIdx = 0;
@@ -538,8 +555,15 @@ self.onmessage = async function(e) {
         async function runSlot() {
             while (nextIdx < total) {
                 const i = nextIdx++;
-                const [name, { data, filetype }] = entries[i];
+                const { name, filetype, getData } = allEntries[i];
                 showLoading(`Hashing ${name}…`, completedCount / total);
+                const data = await getData();
+                if (data == null) {
+                    results[i] = [name, filetype, 'N/A', 'N/A', 'N/A', 'N/A'];
+                    completedCount++;
+                    showLoading(`Hashing… (${completedCount}/${total})`, completedCount / total);
+                    continue;
+                }
                 const buf = await getBufCopy(data);
                 const h = await hashInWorker(buf);  // buf is transferred (zero-copy)
                 results[i] = [name, filetype, h.md5, h.sha1, h.sha256, h.sha512];
@@ -1278,6 +1302,128 @@ self.onmessage = async function(e) {
         }
     }
 
+    // ---- Scroll-zoom + pinch + pan for preview areas ----
+    // body: container element (overflow set to hidden); getEl: returns current content element
+    // Returns { setZoom(scale), doFit(), reapply() }
+    function attachZoomPan(body, getEl) {
+        let scale = 1, tx = 0, ty = 0;
+        let panning = false, pX = 0, pY = 0, pTx = 0, pTy = 0;
+        let pinchDist = null;
+        body.style.overflow = 'hidden';
+        body.style.touchAction = 'none';
+        body.style.alignItems = 'flex-start';
+        body.style.justifyContent = 'flex-start';
+
+        function applyTransform() {
+            const el = getEl();
+            if (!el) return;
+            el.style.maxWidth = el.style.maxHeight = 'none';
+            el.style.transformOrigin = '0 0';
+            el.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+            body.style.cursor = panning ? 'grabbing' : 'grab';
+        }
+        function getSize() {
+            const el = getEl();
+            if (!el) return [0, 0];
+            return [el.width || el.offsetWidth || 1, el.height || el.offsetHeight || 1];
+        }
+        function zoomAt(cx, cy, factor) {
+            const r = body.getBoundingClientRect();
+            const bx = cx - r.left, by = cy - r.top;
+            const px = (bx - tx) / scale, py = (by - ty) / scale;
+            scale = Math.min(64, Math.max(0.05, scale * factor));
+            tx = bx - px * scale; ty = by - py * scale;
+            applyTransform();
+        }
+        body.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+        body.addEventListener('pointerdown', e => {
+            if (e.button !== 0) return;
+            panning = true; pX = e.clientX; pY = e.clientY; pTx = tx; pTy = ty;
+            body.setPointerCapture(e.pointerId); applyTransform();
+        });
+        body.addEventListener('pointermove', e => { if (!panning) return; tx = pTx + e.clientX - pX; ty = pTy + e.clientY - pY; applyTransform(); });
+        body.addEventListener('pointerup', () => { panning = false; applyTransform(); });
+        body.addEventListener('touchstart', e => {
+            if (e.touches.length === 2) { e.preventDefault(); pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
+        }, { passive: false });
+        body.addEventListener('touchmove', e => {
+            if (e.touches.length !== 2) return; e.preventDefault();
+            const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            if (pinchDist !== null) zoomAt(cx, cy, d / pinchDist);
+            pinchDist = d;
+        }, { passive: false });
+        body.addEventListener('touchend', () => { pinchDist = null; });
+
+        function doFit() {
+            const [ew, eh] = getSize();
+            const bw = body.clientWidth, bh = body.clientHeight;
+            if (!bw || !bh || !ew || !eh) return;
+            const s = Math.min((bw - 40) / ew, (bh - 40) / eh);
+            scale = Math.min(1, s);
+            tx = (bw - ew * scale) / 2; ty = (bh - eh * scale) / 2;
+            applyTransform();
+        }
+        function setZoom(newScale) {
+            const [ew, eh] = getSize();
+            const bw = body.clientWidth, bh = body.clientHeight;
+            scale = newScale;
+            tx = (bw - ew * scale) / 2; ty = (bh - eh * scale) / 2;
+            applyTransform();
+        }
+        // Recentre without waiting for a frame (called when canvas size changes mid-animation)
+        function recentre() {
+            const [ew, eh] = getSize();
+            const bw = body.clientWidth, bh = body.clientHeight;
+            if (!bw || !bh || !ew || !eh) return;
+            tx = (bw - ew * scale) / 2; ty = (bh - eh * scale) / 2;
+            applyTransform();
+        }
+        // Initial fit after element is in DOM
+        requestAnimationFrame(() => requestAnimationFrame(doFit));
+        return { setZoom, doFit, reapply: applyTransform, recentre };
+    }
+
+    // Creates a GIF-ready frame: composites on black (shadow pixels render correctly),
+    // then replaces fully-transparent source pixels with the GIF transparent key (magenta).
+    function makeGifFrame(srcCanvas, w, h) {
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(srcCanvas, 0, 0);
+        const sw = Math.min(srcCanvas.width, w), sh = Math.min(srcCanvas.height, h);
+        const srcD = srcCanvas.getContext('2d').getImageData(0, 0, sw, sh).data;
+        const dstImg = ctx.getImageData(0, 0, w, h);
+        const dd = dstImg.data;
+        for (let y = 0; y < sh; y++) {
+            for (let x = 0; x < sw; x++) {
+                if (srcD[(y * sw + x) * 4 + 3] === 0) {
+                    const di = (y * w + x) * 4;
+                    dd[di] = 0xFF; dd[di + 1] = 0x00; dd[di + 2] = 0xFF; dd[di + 3] = 0xFF;
+                }
+            }
+        }
+        ctx.putImageData(dstImg, 0, 0);
+        return cv;
+    }
+
+    function applyBgState(bodyEl) {
+        bodyEl.classList.toggle('bg-white', state.whiteBg);
+    }
+
+    function setupBgToggle(btnEl, bodyEl) {
+        if (!btnEl || !bodyEl) return;
+        btnEl.classList.toggle('active', state.whiteBg);
+        btnEl.addEventListener('click', () => {
+            state.whiteBg = !state.whiteBg;
+            btnEl.classList.toggle('active', state.whiteBg);
+            bodyEl.classList.toggle('bg-white', state.whiteBg);
+        });
+    }
+
     // ---- Preview renderers ----
     function showImagePreview(container, canvas, filename, dimensions, type, rawData) {
         container.innerHTML = `
@@ -1293,7 +1439,8 @@ self.onmessage = async function(e) {
                         <button title="Actual size" data-zoom="actual">1:1</button>
                         <button title="2x" data-zoom="2x">2×</button>
                         <button title="4x" data-zoom="4x">4×</button>
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□ Border</button>
+                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="bg-toggle-btn"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□</button>
                         ${rawData ? '<button title="Show file hashes" id="hash-img-btn"># Hash</button>' : ''}
                         <button title="Export as PNG" id="export-png-btn">💾 PNG</button>
                         ${rawData ? '<button title="Export original" id="export-orig-btn">💾 Orig</button>' : ''}
@@ -1321,27 +1468,20 @@ self.onmessage = async function(e) {
             });
         }
 
-        // Zoom controls
+        // Zoom controls + pan
+        const zp = attachZoomPan(body, () => c);
         $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
             btn.addEventListener('click', () => {
-                const zoom = btn.dataset.zoom;
-                if (zoom === 'fit') {
-                    body.classList.remove('zoom-actual');
-                    c.style.transform = '';
-                } else if (zoom === 'actual') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = '';
-                } else if (zoom === '2x') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = 'scale(2)';
-                    c.style.transformOrigin = 'center';
-                } else if (zoom === '4x') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = 'scale(4)';
-                    c.style.transformOrigin = 'center';
-                }
+                const z = btn.dataset.zoom;
+                if (z === 'fit') zp.doFit();
+                else if (z === 'actual') zp.setZoom(1);
+                else if (z === '2x') zp.setZoom(2);
+                else if (z === '4x') zp.setZoom(4);
             });
         });
+
+        applyBgState(body);
+        setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
 
         // Export PNG
         const pngBtn = container.querySelector('#export-png-btn');
@@ -1377,7 +1517,8 @@ self.onmessage = async function(e) {
                         <button title="Actual size" data-zoom="actual">1:1</button>
                         <button title="2x" data-zoom="2x">2×</button>
                         <button title="4x" data-zoom="4x">4×</button>
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□ Border</button>
+                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="bg-toggle-btn"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□</button>
                         <button title="Export as PNG" id="export-png-btn">💾 PNG</button>
                     </div>
                 </div>
@@ -1418,27 +1559,20 @@ self.onmessage = async function(e) {
             });
         }
 
-        // Zoom controls
+        // Zoom controls + pan
+        const zp = attachZoomPan(body, () => c);
         $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
             btn.addEventListener('click', () => {
-                const zoom = btn.dataset.zoom;
-                if (zoom === 'fit') {
-                    body.classList.remove('zoom-actual');
-                    c.style.transform = '';
-                } else if (zoom === 'actual') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = '';
-                } else if (zoom === '2x') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = 'scale(2)';
-                    c.style.transformOrigin = 'center';
-                } else if (zoom === '4x') {
-                    body.classList.add('zoom-actual');
-                    c.style.transform = 'scale(4)';
-                    c.style.transformOrigin = 'center';
-                }
+                const z = btn.dataset.zoom;
+                if (z === 'fit') zp.doFit();
+                else if (z === 'actual') zp.setZoom(1);
+                else if (z === '2x') zp.setZoom(2);
+                else if (z === '4x') zp.setZoom(4);
             });
         });
+
+        applyBgState(body);
+        setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
 
         // Export PNG
         const pngBtn = container.querySelector('#export-png-btn');
@@ -1505,7 +1639,12 @@ self.onmessage = async function(e) {
                     </div>
                     <div class="preview-toolbar">
                         ${groups.length > 1 ? `<select id="def-preview-group" title="Select group">${groupOptions}</select>` : ''}
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-preview-border-btn">□ Border</button>
+                        <button title="Zoom fit" data-zoom="fit">⊡</button>
+                        <button title="Actual size" data-zoom="actual">1:1</button>
+                        <button title="2×" data-zoom="2x">2×</button>
+                        <button title="4×" data-zoom="4x">4×</button>
+                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="def-preview-bg-btn"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-preview-border-btn">□</button>
                         <button title="Export all frames as PNG sequence" id="def-preview-seq">💾 Seq</button>
                         <button title="Export animation as GIF" id="def-preview-gif">💾 GIF</button>
                         ${rawData ? '<button title="Export original DEF file" id="def-preview-orig">💾 DEF</button>' : ''}
@@ -1526,14 +1665,24 @@ self.onmessage = async function(e) {
         body.appendChild(c);
         if (state.showBorders) c.classList.add('img-border');
 
+        // Declare zpDef before drawFrame so the closure can call recentre()
+        const zpDef = attachZoomPan(body, () => body.querySelector('canvas'));
+        applyBgState(body);
+        setupBgToggle(container.querySelector('#def-preview-bg-btn'), body);
+
         function drawFrame() {
             const frameCount = def.getFrameCount(currentGroup);
             if (frameCount === 0) return;
             const canvas = def.readImage('combined', currentGroup, frameIdx);
             if (canvas) {
-                c.width = canvas.width;
-                c.height = canvas.height;
-                c.getContext('2d').drawImage(canvas, 0, 0);
+                if (c.width !== canvas.width || c.height !== canvas.height) {
+                    c.width = canvas.width;
+                    c.height = canvas.height;
+                    zpDef.recentre();
+                }
+                const ctx2d = c.getContext('2d');
+                ctx2d.clearRect(0, 0, c.width, c.height);
+                ctx2d.drawImage(canvas, 0, 0);
             }
             frameIdx = (frameIdx + 1) % frameCount;
         }
@@ -1578,6 +1727,19 @@ self.onmessage = async function(e) {
             });
         }
 
+        // Zoom controls + pan
+        $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const z = btn.dataset.zoom;
+                if (z === 'fit') zpDef.doFit();
+                else if (z === 'actual') zpDef.setZoom(1);
+                else if (z === '2x') zpDef.setZoom(2);
+                else if (z === '4x') zpDef.setZoom(4);
+            });
+        });
+
+        let _defPrevSize = [0, 0];  // to detect canvas size change between frames
+
         // Sequence export
         const seqBtn = container.querySelector('#def-preview-seq');
         if (seqBtn) {
@@ -1607,18 +1769,10 @@ self.onmessage = async function(e) {
                         window._gifWorkerBlob = workerBlob;
                     } catch (e) { toast('Failed to load GIF worker: ' + e.message, 'error'); return; }
                 }
-                const gif = new GIF({ workers: 2, quality: 10, width: size[0], height: size[1], workerScript: workerBlob, transparent: 0xFF00FF, background: '#FF00FF' });
+                const gif = new GIF({ workers: 2, quality: 10, width: size[0], height: size[1], workerScript: workerBlob, transparent: 0xFF00FF });
                 for (let i = 0; i < fc; i++) {
                     const canvas = def.readImage('combined', currentGroup, i);
-                    if (canvas) {
-                        const cv = document.createElement('canvas');
-                        cv.width = size[0]; cv.height = size[1];
-                        const ctx = cv.getContext('2d');
-                        ctx.fillStyle = '#FF00FF';  // magenta = transparent key
-                        ctx.fillRect(0, 0, cv.width, cv.height);
-                        ctx.drawImage(canvas, 0, 0);
-                        gif.addFrame(cv, { delay: 150, copy: true });
-                    }
+                    if (canvas) gif.addFrame(makeGifFrame(canvas, size[0], size[1]), { delay: 150, copy: true });
                 }
                 toast('Encoding GIF...', 'info');
                 gif.on('finished', blob => {
@@ -1672,7 +1826,8 @@ self.onmessage = async function(e) {
                         <button title="Actual size" data-zoom="actual">1:1</button>
                         <button title="2x" data-zoom="2x">2×</button>
                         <button title="4x" data-zoom="4x">4×</button>
-                        <button title="Show glyph borders" class="toggle-btn${state.showBorders ? ' active' : ''}" id="fnt-border-btn">□ Border</button>
+                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="bg-toggle-btn"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
+                        <button title="Show glyph borders" class="toggle-btn${state.showBorders ? ' active' : ''}" id="fnt-border-btn">□</button>
                         ${rawData ? '<button title="Show file hashes" id="hash-fnt-btn"># Hash</button>' : ''}
                         <button title="Export as PNG" id="export-fnt-png-btn">💾 PNG</button>
                         ${rawData ? '<button title="Export original FNT" id="export-fnt-orig-btn">💾 FNT</button>' : ''}
@@ -1682,19 +1837,22 @@ self.onmessage = async function(e) {
             </div>
         `;
         const body = container.querySelector('#preview-fnt-body');
-        let currentTransform = '';
         let sheet = H3.FNT.renderSheet(font, borders);
         body.appendChild(sheet);
+        const zpFnt = attachZoomPan(body, () => body.querySelector('canvas'));
 
         $$('.preview-toolbar button[data-zoom]', container).forEach(btn => {
             btn.addEventListener('click', () => {
-                const zoom = btn.dataset.zoom;
-                if (zoom === 'fit') { body.classList.remove('zoom-actual'); currentTransform = ''; sheet.style.transform = ''; }
-                else if (zoom === 'actual') { body.classList.add('zoom-actual'); currentTransform = ''; sheet.style.transform = ''; }
-                else if (zoom === '2x') { body.classList.add('zoom-actual'); currentTransform = 'scale(2)'; sheet.style.transform = 'scale(2)'; sheet.style.transformOrigin = 'center'; }
-                else if (zoom === '4x') { body.classList.add('zoom-actual'); currentTransform = 'scale(4)'; sheet.style.transform = 'scale(4)'; sheet.style.transformOrigin = 'center'; }
+                const z = btn.dataset.zoom;
+                if (z === 'fit') zpFnt.doFit();
+                else if (z === 'actual') zpFnt.setZoom(1);
+                else if (z === '2x') zpFnt.setZoom(2);
+                else if (z === '4x') zpFnt.setZoom(4);
             });
         });
+
+        applyBgState(body);
+        setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
 
         const borderBtn = container.querySelector('#fnt-border-btn');
         if (borderBtn) {
@@ -1703,9 +1861,9 @@ self.onmessage = async function(e) {
                 state.showBorders = borders;
                 borderBtn.classList.toggle('active', borders);
                 const next = H3.FNT.renderSheet(font, borders);
-                if (currentTransform) { next.style.transform = currentTransform; next.style.transformOrigin = 'center'; }
                 sheet.replaceWith(next);
                 sheet = next;
+                zpFnt.reapply();
             });
         }
 
@@ -2982,9 +3140,14 @@ self.onmessage = async function(e) {
 
                         <span class="frame-info" id="def-frame-info">Frame 0/0</span>
 
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-border-toggle">□ Border</button>
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-border-toggle">□</button>
+                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="def-bg-toggle"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
 
                         <div class="def-export-btns">
+                            <button id="def-zoom-fit" title="Zoom fit">⊡</button>
+                            <button id="def-zoom-1" title="Actual size">1:1</button>
+                            <button id="def-zoom-2" title="2×">2×</button>
+                            <button id="def-zoom-4" title="4×">4×</button>
                             <button id="def-export-orig" title="Export original DEF file">💾 Orig</button>
                             <button id="def-export-png" title="Export current frame as PNG">💾 PNG</button>
                             <button id="def-export-seq" title="Export all frames as PNG sequence">💾 Seq</button>
@@ -3001,11 +3164,17 @@ self.onmessage = async function(e) {
         `;
 
         // Setup controls
-        setupDefControls(def, filename);
+        const zpAnim = setupDefControls(def, filename);
 
-        // Initial render
+        // Initial render — hide player until doFit fires to avoid top-left flash
+        const _initPlayer = $('#def-player');
+        if (_initPlayer) _initPlayer.style.visibility = 'hidden';
         renderDefFrames(def);
         renderDefFrame(def);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (zpAnim) zpAnim.doFit();
+            if (_initPlayer) _initPlayer.style.visibility = '';
+        }));
 
         // Auto-play if animated
         const autoFrames = def.getFrameCount(state.defAnim.groupId);
@@ -3021,6 +3190,7 @@ self.onmessage = async function(e) {
     }
 
     function setupDefControls(def, filename) {
+        const player = $('#def-player');
         const playBtn = $('#def-play');
         const prevBtn = $('#def-prev');
         const nextBtn = $('#def-next');
@@ -3158,19 +3328,13 @@ self.onmessage = async function(e) {
                     quality: 10,
                     width: size[0],
                     height: size[1],
-                    workerScript: workerBlob
+                    workerScript: workerBlob,
+                    transparent: 0xFF00FF
                 });
 
                 for (let i = 0; i < frameCount; i++) {
                     const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, i);
-                    if (canvas) {
-                        const c = document.createElement('canvas');
-                        c.width = size[0];
-                        c.height = size[1];
-                        const ctx = c.getContext('2d');
-                        ctx.drawImage(canvas, 0, 0);
-                        gif.addFrame(c, { delay: state.defAnim.speed, copy: true });
-                    }
+                    if (canvas) gif.addFrame(makeGifFrame(canvas, size[0], size[1]), { delay: state.defAnim.speed, copy: true });
                 }
 
                 toast('Encoding GIF...', 'info');
@@ -3181,6 +3345,23 @@ self.onmessage = async function(e) {
                 gif.render();
             });
         }
+
+        // Zoom controls + pan for animation player
+        const zpAnim = player ? attachZoomPan(player, () => player.querySelector('canvas')) : null;
+        const defZoomFit = $('#def-zoom-fit');
+        const defZoom1 = $('#def-zoom-1');
+        const defZoom2 = $('#def-zoom-2');
+        const defZoom4 = $('#def-zoom-4');
+        if (zpAnim) {
+            if (defZoomFit) defZoomFit.addEventListener('click', () => zpAnim.doFit());
+            if (defZoom1) defZoom1.addEventListener('click', () => zpAnim.setZoom(1));
+            if (defZoom2) defZoom2.addEventListener('click', () => zpAnim.setZoom(2));
+            if (defZoom4) defZoom4.addEventListener('click', () => zpAnim.setZoom(4));
+        }
+        const defBgToggle = $('#def-bg-toggle');
+        if (player) applyBgState(player);
+        if (defBgToggle && player) setupBgToggle(defBgToggle, player);
+        return zpAnim;
     }
 
     function startDefAnimation(def) {
@@ -3205,14 +3386,16 @@ self.onmessage = async function(e) {
         }
 
         const canvas = def.readImage(state.defAnim.how, state.defAnim.groupId, state.defAnim.frameIdx);
-        player.innerHTML = '';
         if (canvas) {
-            const c = document.createElement('canvas');
-            c.width = canvas.width;
-            c.height = canvas.height;
+            const existingMsg = player.querySelector('p');
+            if (existingMsg) existingMsg.remove();
+            let c = player.querySelector('canvas');
+            const sizeChanged = !c || c.width !== canvas.width || c.height !== canvas.height;
+            if (!c) { c = document.createElement('canvas'); player.appendChild(c); }
+            if (sizeChanged) { c.width = canvas.width; c.height = canvas.height; }
+            c.getContext('2d').clearRect(0, 0, c.width, c.height);
             c.getContext('2d').drawImage(canvas, 0, 0);
-            if (state.showBorders) c.classList.add('img-border');
-            player.appendChild(c);
+            c.classList.toggle('img-border', state.showBorders);
         } else {
             player.innerHTML = '<p style="color:var(--text-muted);">No image for this mode</p>';
         }
@@ -3638,6 +3821,7 @@ self.onmessage = async function(e) {
                 const binFile = await askForBinFile(file.name);
                 if (!binFile) return;
                 sourceFile = binFile;
+                state.sourceFiles.set(binFile.name, { data: binFile, filetype: 'BIN Data' });
                 effectiveDataOffset = 0;
             }
 
