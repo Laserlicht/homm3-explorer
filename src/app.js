@@ -2570,7 +2570,6 @@
     const DEMO_URL = 'https://web.archive.org/web/20150506062114if_/http://updates.lokigames.com/loki_demos/heroes3-demo.run';
 
     function downloadDemo() {
-        // Show modal dialog with instructions
         const overlay = document.createElement('div');
         overlay.className = 'loading-overlay';
         overlay.style.display = 'flex';
@@ -2580,19 +2579,25 @@
                 <div style="font-size:40px; margin-bottom:12px;">🏰</div>
                 <h2 style="font-size:18px; margin-bottom:6px; color:var(--text-primary);">Load HoMM3 Demo</h2>
                 <p style="color:var(--text-secondary); font-size:13px; line-height:1.6; margin-bottom:20px;">
-                    The demo must be downloaded manually (browser security prevents direct download from archive.org).<br>
-                    Then load the <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code> file here — everything is processed locally in the browser.
+                    Downloads the free Linux demo (~100 MB) and loads it directly — nothing is saved to disk.
+                    Or open a <code style="background:var(--bg-tertiary); padding:1px 5px; border-radius:4px;">.run</code> file you already have.
                 </p>
-                <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
-                    <a href="${DEMO_URL}" download="heroes3-demo.run" target="_blank" rel="noopener" class="welcome-btn secondary" style="text-decoration:none; justify-content:center; width:100%;">
-                        ⬇️&nbsp; 1. Download demo (~100 MB)
-                    </a>
-                    <button id="demo-load-run" class="welcome-btn primary" style="width:100%; justify-content:center;">
-                        📂&nbsp; 2. Open downloaded .run file
+                <div id="demo-buttons" style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+                    <button id="demo-fetch" class="welcome-btn primary" style="width:100%; justify-content:center;">
+                        ⬇️&nbsp; Download &amp; Load Demo
+                    </button>
+                    <button id="demo-load-run" class="welcome-btn secondary" style="width:100%; justify-content:center;">
+                        📂&nbsp; Open local .run file
                     </button>
                     <button id="demo-cancel" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
                         Cancel
                     </button>
+                </div>
+                <div id="demo-progress-area" style="display:none; margin-top:4px;">
+                    <p id="demo-progress-label" style="color:var(--text-secondary); font-size:13px; margin-bottom:10px;">Downloading…</p>
+                    <div style="width:100%; height:6px; background:var(--bg-tertiary); border-radius:3px; overflow:hidden;">
+                        <div id="demo-progress-bar" style="height:100%; width:0%; background:linear-gradient(90deg,var(--accent),var(--gold)); border-radius:3px; transition:width .2s;"></div>
+                    </div>
                 </div>
             </div>
         `;
@@ -2619,6 +2624,84 @@
             runInput.remove();
             if (!file) return;
             await processRunFile(file);
+        });
+
+        overlay.querySelector('#demo-fetch').addEventListener('click', async () => {
+            overlay.querySelector('#demo-buttons').style.display = 'none';
+            const progressArea = overlay.querySelector('#demo-progress-area');
+            const progressBar = overlay.querySelector('#demo-progress-bar');
+            const progressLabel = overlay.querySelector('#demo-progress-label');
+            progressArea.style.display = 'block';
+            progressLabel.textContent = 'Connecting…';
+
+            try {
+                const resp = await fetch(DEMO_URL);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+                const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
+                const reader = resp.body.getReader();
+                const chunks = [];
+                let received = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    if (total > 0) {
+                        const pct = Math.round(received / total * 100);
+                        progressBar.style.width = pct + '%';
+                        progressLabel.textContent = `Downloading… ${pct}% (${(received / 1048576).toFixed(1)} MB)`;
+                    } else {
+                        progressLabel.textContent = `Downloading… ${(received / 1048576).toFixed(1)} MB`;
+                    }
+                }
+
+                progressBar.style.width = '100%';
+                progressLabel.textContent = 'Download complete, loading…';
+                overlay.remove();
+                runInput.remove();
+
+                const blob = new Blob(chunks, { type: 'application/octet-stream' });
+                await processRunFile(blob);
+
+            } catch (_corsErr) {
+                // CORS blocked — show manual save-as instructions
+                progressArea.style.display = 'none';
+                const box = overlay.querySelector('div');
+                box.innerHTML = `
+                    <div style="font-size:32px; margin-bottom:10px;">⬇️</div>
+                    <h2 style="font-size:17px; margin-bottom:8px; color:var(--text-primary);">Manual download required</h2>
+                    <p style="color:var(--text-secondary); font-size:13px; line-height:1.7; margin-bottom:16px;">
+                        The server blocks direct browser access (CORS).<br>
+                        Please save the file manually, then load it here.
+                    </p>
+                    <p style="color:var(--text-muted); font-size:12px; background:var(--bg-tertiary); border-radius:var(--radius); padding:10px 14px; margin-bottom:18px; text-align:left; line-height:1.7;">
+                        1. Click the link below<br>
+                        2. If the file opens as text in a new tab:<br>
+                        &nbsp;&nbsp;&nbsp;<b>right-click the link → "Save link as…"</b><br>
+                        3. Then click "Open .run file" below
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:10px; align-items:center;">
+                        <a href="${DEMO_URL}" target="_blank" rel="noopener" class="welcome-btn secondary" style="text-decoration:none; justify-content:center; width:100%;">
+                            🔗&nbsp; Open demo link (~100 MB)
+                        </a>
+                        <button id="demo-load-run2" class="welcome-btn primary" style="width:100%; justify-content:center;">
+                            📂&nbsp; Open downloaded .run file
+                        </button>
+                        <button id="demo-cancel2" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font:inherit; font-size:12px; padding:8px;">
+                            Cancel
+                        </button>
+                    </div>
+                `;
+                overlay.querySelector('#demo-cancel2').addEventListener('click', () => {
+                    overlay.remove();
+                    runInput.remove();
+                });
+                overlay.querySelector('#demo-load-run2').addEventListener('click', () => {
+                    runInput.click();
+                });
+            }
         });
     }
 
