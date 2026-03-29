@@ -6,6 +6,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 
 - **Drag & drop** game files directly onto the page, or use the file picker
 - **GOG installer support** — open `.exe` or `.bin` GOG installers directly; HoMM3 data is extracted on the fly
+- **ISO CD image support** — open original HoMM3 CD images (`.iso`); game files are extracted directly or from InstallShield CABs
 - **Archive browsing** — navigate the contents of any supported container
 - **Rich preview** for all major asset types:
   - Images: `.PCX`, `.D32` (raw RGBA), `.DDS`
@@ -31,6 +32,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.D32` | Raw 32-bit RGBA images |
 | `.FNT` | Bitmap fonts (256-glyph indexed format) |
 | `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) |
+| `.ISO` | Original CD image (ISO 9660, InstallShield CABs) |
 
 ## Usage
 
@@ -50,6 +52,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `app.js` | Application logic, UI, drag & drop, preview | MIT |
 | `parsers.js` | HoMM3 format parsers (LOD, PAK, SND, VID, DEF, PCX, D32, FNT) | MIT |
 | `innoextract.js` | GOG / Inno Setup installer extractor | MIT |
+| `isoextract.js` | ISO 9660 + InstallShield CAB extractor | MIT |
 | `lzma2.js` | LZMA2 decompressor (based on 7-Zip SDK by Igor Pavlov) | MIT |
 | `video-decoders.js` | SMK and BIK video decoders (derived from FFmpeg) | **LGPL-2.1-or-later** |
 
@@ -68,6 +71,8 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 HoMM3 format documentation and research courtesy of the [VCMI Project](https://vcmi.eu).
 
 Inno Setup installer format structure based on research from [innoextract](https://github.com/dscharrer/innoextract) by Daniel Scharrer (zlib/libpng license).
+
+InstallShield CAB format structure based on research from [unshield](https://github.com/twogood/unshield) by David Eriksson (LGPL-2.1 license).
 
 ---
 

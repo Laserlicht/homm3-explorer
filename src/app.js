@@ -372,6 +372,19 @@
 
         for (const file of files) {
             const ext = file.name.split('.').pop().toLowerCase();
+
+            // ISO files are too large to read entirely — use File.slice() random access
+            if (ext === 'iso') {
+                try {
+                    await processIsoFile(file);
+                } catch (err) {
+                    console.error(err);
+                    toast(`Error loading ${file.name}: ${err.message}`, 'error');
+                    hideLoading();
+                }
+                continue;
+            }
+
             const data = new Uint8Array(await file.arrayBuffer());
 
                 try {
@@ -2590,6 +2603,112 @@
             if (!file) return;
             await processRunFile(file);
         });
+    }
+
+    // ---- ISO CD Image processing ----
+    async function processIsoFile(file) {
+        showLoading('Reading ISO...', 0);
+
+        try {
+            if (!(await ISOExtract.isIsoFile(file))) {
+                hideLoading();
+                toast('Not a valid ISO 9660 image.', 'error');
+                return;
+            }
+
+            showLoading('Scanning ISO filesystem...', -1);
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const { directGameFiles, cabSetups } = await ISOExtract.scanIso(file);
+
+            const totalDirect = directGameFiles.length;
+            let totalCab = 0;
+            for (const setup of cabSetups) totalCab += setup.targetFiles.length;
+            const totalFiles = totalDirect + totalCab;
+
+            if (totalFiles === 0) {
+                hideLoading();
+                toast('No HoMM3 game files found in ISO.', 'error');
+                return;
+            }
+
+            let extracted = 0;
+
+            // 1) Extract direct game files from ISO (no decompression needed)
+            for (const gf of directGameFiles) {
+                const basename = gf.name.replace(/;.*$/, '');
+                showLoading(`Extracting ${basename}...`, extracted / totalFiles);
+                const data = await ISOExtract.extractIsoFile(file, gf.lba, gf.size);
+                await registerGameFile(basename, data, 'ISO');
+                extracted++;
+            }
+
+            // 2) Extract files from InstallShield CABs
+            for (const setup of cabSetups) {
+                for (const fileDesc of setup.targetFiles) {
+                    const displayName = fileDesc.directory
+                        ? fileDesc.directory + '/' + fileDesc.name
+                        : fileDesc.name;
+                    showLoading(`Extracting ${fileDesc.name} (CAB)...`, extracted / totalFiles);
+
+                    const data = await ISOExtract.extractIsCabFile(
+                        file, fileDesc, setup.volumeHeaders,
+                        (done, total) => {
+                            showLoading(`Extracting ${fileDesc.name} (CAB)...`,
+                                (extracted + done / total) / totalFiles);
+                        }
+                    );
+
+                    if (data && data.length > 0) {
+                        await registerGameFile(fileDesc.name, data, 'ISO');
+                    }
+                    extracted++;
+                }
+            }
+
+            // Auto-open first bitmap LOD, then first archive
+            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('bitmap'));
+            if (bitmapKey) {
+                const entry = state.archives.get(bitmapKey);
+                state.archive = entry.archive;
+                state.archiveName = bitmapKey;
+                state.archiveType = 'lod';
+            } else if (state.archives.size > 0) {
+                const [firstName, firstEntry] = state.archives.entries().next().value;
+                state.archive = firstEntry.archive;
+                state.archiveName = firstName;
+                state.archiveType = firstEntry.type;
+            }
+
+            updateArchiveSelector();
+            buildFileList();
+            hideLoading();
+            setMode('explorer');
+            toast(`Extracted ${extracted} files from ISO!`, 'success');
+
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('ISO extraction error: ' + err.message, 'error');
+        }
+    }
+
+    // Register an extracted game file (LOD/SND/VID) into state
+    async function registerGameFile(name, data, source) {
+        const ext = name.split('.').pop().toLowerCase();
+        const displayName = name + ' (' + source + ')';
+
+        if (ext === 'lod') {
+            const archive = await H3.LodFile.open(data);
+            state.archives.set(displayName, { archive, type: 'lod', data });
+        } else if (ext === 'snd') {
+            const archive = await H3.SndFile.open(data);
+            state.archives.set(displayName, { archive, type: 'snd', data });
+        } else if (ext === 'vid') {
+            const archive = await H3.VidFile.open(data);
+            state.archives.set(displayName, { archive, type: 'vid', data });
+        } else {
+            state.standaloneFiles.set(displayName, { data, type: ext });
+        }
     }
 
     async function processRunFile(file) {

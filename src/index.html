@@ -48,7 +48,7 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Demo
                 </button>
-                <input type="file" id="file-input" accept=".lod,.pak,.pac,.snd,.vid,.def,.d32,.pcx,.p32,.fnt,.run,.exe" multiple style="display:none">
+                <input type="file" id="file-input" accept=".lod,.pak,.pac,.snd,.vid,.def,.d32,.pcx,.p32,.fnt,.run,.exe,.iso" multiple style="display:none">
                 <input type="file" id="bin-input" accept=".bin" style="display:none">
             </div>
         </header>
@@ -84,8 +84,9 @@
                         <span class="format-badge">.D32</span>
                         <span class="format-badge">.FNT</span>
                         <span class="format-badge format-badge-exe">.EXE</span>
+                        <span class="format-badge format-badge-exe">.ISO</span>
                     </div>
-                    <p class="welcome-hint">EXE support is for GOG installers of HoMM3 Complete, Chronicles, and HotA.</p>
+                    <p class="welcome-hint">EXE support is for GOG installers of HoMM3 Complete, Chronicles, and HotA.<br>ISO support is for original HoMM3 CD images (ISO 9660).</p>
                 </div>
             </div>
 
@@ -229,6 +230,7 @@
                             <tr><td><a href="https://github.com/jnordberg/gif.js" target="_blank" rel="noopener">gif.js</a></td><td>MIT</td></tr>
                             <tr><td>LZMA2 decoder (Igor Pavlov / 7-Zip SDK)</td><td>Public Domain</td></tr>
                             <tr><td><a href="https://github.com/dscharrer/innoextract" target="_blank" rel="noopener">innoextract</a> (Inno Setup format reference)</td><td>zlib/libpng</td></tr>
+                            <tr><td><a href="https://github.com/twogood/unshield" target="_blank" rel="noopener">unshield</a> (InstallShield CAB format reference)</td><td>LGPL&nbsp;2.1</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -243,6 +245,7 @@
     <script src="parsers.js"></script>
     <script src="video-decoders.js"></script>
     <script src="innoextract.js"></script>
+    <script src="isoextract.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
