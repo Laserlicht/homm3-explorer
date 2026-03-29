@@ -52,7 +52,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `app.js` | Application logic, UI, drag & drop, preview | MIT |
 | `parsers.js` | HoMM3 format parsers (LOD, PAK, SND, VID, DEF, PCX, D32, FNT) | MIT |
 | `innoextract.js` | GOG / Inno Setup installer extractor | MIT |
-| `isoextract.js` | ISO 9660 + InstallShield CAB extractor | MIT |
+| `isoextract.js` | ISO 9660 + InstallShield CAB extractor (based on unshield) | **LGPL-2.1-or-later** |
 | `lzma2.js` | LZMA2 decompressor (based on 7-Zip SDK by Igor Pavlov) | MIT |
 | `video-decoders.js` | SMK and BIK video decoders (derived from FFmpeg) | **LGPL-2.1-or-later** |
 
@@ -62,11 +62,14 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 |-----------|--------|
 | This project (all files except below) | [MIT](LICENSE-MIT) |
 | `video-decoders.js` (FFmpeg-derived SMK/BIK decoders) | [LGPL-2.1-or-later](LICENSE-LGPL) |
+| `isoextract.js` (unshield-derived InstallShield CAB extractor) | [LGPL-2.1-or-later](LICENSE-LGPL) |
 | [pako](https://github.com/nodeca/pako) (zlib/deflate) | MIT |
 | [gif.js](https://github.com/jnordberg/gif.js) | MIT |
 | `lzma2.js` (based on 7-Zip SDK by Igor Pavlov) | Public Domain |
 
 `video-decoders.js` contains algorithms and data tables derived from [FFmpeg](https://ffmpeg.org) (`libavcodec/smacker.c`, `bink.c`, `binkb.c`) and is therefore licensed under the **GNU Lesser General Public License v2.1 or later** — see [LICENSE-LGPL](LICENSE-LGPL).
+
+`isoextract.js` contains InstallShield CAB extraction logic based on research from [unshield](https://github.com/twogood/unshield) by David Eriksson and is therefore licensed under the **GNU Lesser General Public License v2.1 or later** — see [LICENSE-LGPL](LICENSE-LGPL).
 
 HoMM3 format documentation and research courtesy of the [VCMI Project](https://vcmi.eu).
 

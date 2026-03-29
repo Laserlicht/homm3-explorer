@@ -2,7 +2,8 @@
 // ISOExtract.js - ISO 9660 + InstallShield CAB extractor
 // Extracts HoMM3 game files (.lod, .snd, .vid) from CD images
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Based on research from unshield by David Eriksson (LGPL-2.1)
 // Copyright (c) 2026 HoMM3 Explorer Contributors
 // ============================================================
 

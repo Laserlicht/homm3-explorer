@@ -1263,40 +1263,57 @@
         for (let b = 0x80; b <= 0xFF; b++) highTotal += freq[b];
         if (highTotal === 0) return 'utf-8'; // pure ASCII
 
-        // --- CP1250 Polish/Central-European score ---
-        // ą=0xB9 and ł=0xB3 are unmistakably Polish: very frequent in Polish text,
-        // but in CP1251 they map to № (rare punctuation) and і (only Ukrainian).
-        // ż=0xBF (CP1250) vs ї (CP1251, Ukrainian) is also diagnostic.
+        // --- CP1250 Polish/Czech/Central-European score ---
+        // These bytes are diagnostic for Central European languages and have
+        // different or rare mappings in CP1251/CP1252.
         const cp1250Score =
-            freq[0xB9] * 8 +  // ą
-            freq[0xB3] * 8 +  // ł
-            freq[0xBF] * 4 +  // ż
-            freq[0xA5] * 3 +  // Ą
-            freq[0xA3] * 3 +  // Ł
-            freq[0xCA] * 2 +  // Ę
-            freq[0xAF] * 2;   // Ż
+            freq[0xB9] * 8 +  // ą (Polish)
+            freq[0xB3] * 8 +  // ł (Polish)
+            freq[0xBF] * 4 +  // ż (Polish)
+            freq[0xA5] * 3 +  // Ą (Polish)
+            freq[0xA3] * 3 +  // Ł (Polish)
+            freq[0xCA] * 2 +  // Ę (Polish)
+            freq[0xAF] * 2 +  // Ż (Polish)
+            freq[0x9A] * 6 +  // š (Czech/Slovak)
+            freq[0x9E] * 6 +  // ž (Czech/Slovak)
+            freq[0x8A] * 4 +  // Š (Czech/Slovak)
+            freq[0x8E] * 4 +  // Ž (Czech/Slovak)
+            freq[0x9D] * 3 +  // ť (Czech)
+            freq[0xF8] * 3 +  // ř (Czech — ø in CP1252, rare in FR/DE)
+            freq[0xEC] * 2;   // ě (Czech — ì in CP1252, rare in FR/DE)
 
-        // --- CP1251 Cyrillic/Russian score ---
-        // The most frequent Russian letters occupy the 0xC0-0xFF range exclusively.
-        // In CP1250 these same byte values are accented Latin chars (î, à, å, è, í …)
-        // which essentially never appear in Polish or Czech text.
-        const cp1251Score =
-            freq[0xEE] * 5 +  // о — most common Russian letter
-            freq[0xE0] * 5 +  // а — second most common
-            freq[0xE5] * 3 +  // е
-            freq[0xE8] * 3 +  // и
-            freq[0xED] * 3 +  // н
-            freq[0xF2] * 2 +  // т
-            freq[0xF0] * 2 +  // р
-            freq[0xE2] * 2 +  // в
-            freq[0xEB] * 2;   // л
+        // --- CP1251 vs CP1252 structural analysis ---
+        // Per-byte scoring fails because 0xC0-0xFF bytes map to BOTH Cyrillic
+        // letters (CP1251) and accented Latin letters (CP1252).
+        // Instead, use structural features of the text:
+        //
+        // Russian (CP1251): entire words are Cyrillic → high bytes make up ~40-65%
+        //   of all bytes, and they appear in long consecutive runs (word interiors).
+        // French/German (CP1252): only scattered accented chars → high bytes are
+        //   ~1-10% of all bytes, appearing as isolated single bytes.
 
-        if (cp1250Score > cp1251Score) return 'windows-1250';
+        // 1) High-byte ratio: fraction of ALL bytes that are >= 0x80
+        const highRatio = highTotal / data.length;
 
-        // Cyrillic density fallback: Russian text fills almost the entire 0xC0-0xFF range
-        let cyrHigh = 0;
-        for (let b = 0xC0; b <= 0xFF; b++) cyrHigh += freq[b];
-        if (cp1251Score > 0 || cyrHigh / highTotal > 0.5) return 'windows-1251';
+        // 2) Average run length of high bytes (>=0x80)
+        //    Russian words: runs of 3-10+; Western accents: runs of 1-2
+        let runs = 0, inRun = false;
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] >= 0x80) {
+                if (!inRun) { runs++; inRun = true; }
+            } else {
+                inRun = false;
+            }
+        }
+        const avgRunLen = runs > 0 ? highTotal / runs : 0;
+
+        // Polish uses unique bytes in 0xA0-0xBF; check it first
+        if (cp1250Score > 0 && avgRunLen < 2.5) return 'windows-1250';
+
+        // Cyrillic: needs BOTH high overall density AND clustered high bytes
+        // highRatio > 0.2 rules out Western text (typically <0.10)
+        // avgRunLen > 2.0 rules out isolated accented chars
+        if (highRatio > 0.2 && avgRunLen > 2.0) return 'windows-1251';
 
         return 'windows-1252';
     }
