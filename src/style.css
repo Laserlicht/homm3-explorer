@@ -349,10 +349,22 @@ body {
 
 .sidebar-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
     padding: 10px 14px;
     border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sidebar-header-row .sidebar-title {
+    flex: 1;
+    min-width: 0;
 }
 
 .sidebar-title {
@@ -379,6 +391,12 @@ body {
 }
 
 .sidebar-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.sidebar-controls-row {
     display: flex;
     align-items: center;
     gap: 10px;

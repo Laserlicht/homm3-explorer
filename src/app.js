@@ -59,7 +59,10 @@
         textEncoding: 'auto',
 
         // Last text preview data for re-rendering on encoding change
-        lastTextData: null
+        lastTextData: null,
+
+        // Source files (File objects or Uint8Arrays) for hash computation
+        sourceFiles: new Map() // name -> {data: Uint8Array|File, filetype}
     };
 
     // ---- DOM refs ----
@@ -89,6 +92,7 @@
         els.extFilter = $('#ext-filter');
         els.btnDownloadOriginal = $('#btn-download-archive-original');
         els.btnDownloadZip = $('#btn-download-archive-zip');
+        els.btnDownloadHashes = $('#btn-download-hashes');
     }
 
     // ---- Utilities ----
@@ -280,6 +284,279 @@
         canvas.toBlob(blob => { if (blob) exportBlob(blob, filename); }, 'image/png');
     }
 
+    // ---- Hash computation ----
+    async function getBytes(dataOrFile) {
+        if (dataOrFile instanceof File) {
+            return new Uint8Array(await dataOrFile.arrayBuffer());
+        }
+        return dataOrFile instanceof Uint8Array ? dataOrFile : new Uint8Array(dataOrFile);
+    }
+
+    async function computeHashes(dataOrFile) {
+        const bytes = await getBytes(dataOrFile);
+        const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const toHex = ab => {
+            const u8 = new Uint8Array(ab);
+            let s = '';
+            for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, '0');
+            return s;
+        };
+        // Run all three WebCrypto digests in parallel — MD5 runs sync alongside
+        const [sha1buf, sha256buf, sha512buf] = await Promise.all([
+            crypto.subtle.digest('SHA-1',   buf),
+            crypto.subtle.digest('SHA-256', buf),
+            crypto.subtle.digest('SHA-512', buf),
+        ]);
+        return {
+            'MD5':    md5Hex(bytes),
+            'SHA-1':  toHex(sha1buf),
+            'SHA-256': toHex(sha256buf),
+            'SHA-512': toHex(sha512buf),
+        };
+    }
+
+    // Fast MD5: hardcoded K constants (no runtime sin), Uint32Array message schedule,
+    // no closures inside block loop, no slice() per block.
+    function md5Hex(data) {
+        const len = data.length;
+        const blocks = ((len + 8) >>> 6) + 1;
+        const W = new Uint32Array(blocks * 16);
+        for (let i = 0; i < len; i++) W[i >>> 2] |= data[i] << ((i & 3) << 3);
+        W[len >>> 2] |= 0x80 << ((len & 3) << 3);
+        W[blocks * 16 - 2] = (len * 8) >>> 0;
+        W[blocks * 16 - 1] = (len / 0x20000000) | 0;
+
+        // Shift amounts: indexed by [round (0-3)][position in round (0-3)]
+        const S = new Uint8Array([7, 12, 17, 22,  5, 9, 14, 20,  4, 11, 16, 23,  6, 10, 15, 21]);
+
+        // Precomputed K[i] = floor(abs(sin(i+1)) * 2^32)
+        /* eslint-disable no-multi-spaces */
+        const K = new Int32Array([
+            0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+            0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+            0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+            0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+            0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+            0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+            0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+            0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+        ]);
+        /* eslint-enable no-multi-spaces */
+
+        let ha = 0x67452301, hb = 0xefcdab89 | 0, hc = 0x98badcfe | 0, hd = 0x10325476;
+
+        for (let bi = 0; bi < blocks; bi++) {
+            const base = bi * 16;
+            let a = ha, b = hb, c = hc, d = hd;
+
+            for (let j = 0; j < 64; j++) {
+                let f, g;
+                const r = j >>> 4;
+                if      (r === 0) { f = (b & c) | (~b & d); g = j; }
+                else if (r === 1) { f = (d & b) | (~d & c); g = (5 * j + 1) & 15; }
+                else if (r === 2) { f = b ^ c ^ d;           g = (3 * j + 5) & 15; }
+                else              { f = c ^ (b | ~d);         g = (7 * j) & 15; }
+                const s  = S[(r << 2) | (j & 3)];
+                const t  = (a + f + W[base + g] + K[j]) | 0;
+                a = d; d = c; c = b;
+                b = (b + ((t << s) | (t >>> (32 - s)))) | 0;
+            }
+
+            ha = (ha + a) | 0;
+            hb = (hb + b) | 0;
+            hc = (hc + c) | 0;
+            hd = (hd + d) | 0;
+        }
+
+        let out = '';
+        for (const h of [ha, hb, hc, hd])
+            for (let i = 0; i < 4; i++) out += ((h >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
+        return out;
+    }
+
+    // ---- Web Worker utilities for parallel hashing ----
+    let _hashWorkerUrl = null;
+    function getHashWorkerUrl() {
+        if (_hashWorkerUrl) return _hashWorkerUrl;
+        // Worker script: MD5 + SHA-1/256/512 via SubtleCrypto, all hashes in one pass
+        const script = `
+const K = new Int32Array([
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391]);
+const S = new Uint8Array([7,12,17,22, 5,9,14,20, 4,11,16,23, 6,10,15,21]);
+function md5(u8) {
+    var len = u8.length, blocks = ((len + 8) >>> 6) + 1;
+    var W = new Uint32Array(blocks * 16);
+    for (var i = 0; i < len; i++) W[i >>> 2] |= u8[i] << ((i & 3) << 3);
+    W[len >>> 2] |= 0x80 << ((len & 3) << 3);
+    W[blocks * 16 - 2] = (len * 8) >>> 0;
+    W[blocks * 16 - 1] = (len / 0x20000000) | 0;
+    var ha = 0x67452301, hb = 0xefcdab89 | 0, hc = 0x98badcfe | 0, hd = 0x10325476;
+    for (var bi = 0; bi < blocks; bi++) {
+        var base = bi * 16, a = ha, b = hb, c = hc, d = hd;
+        for (var j = 0; j < 64; j++) {
+            var r = j >>> 4, f, g;
+            if      (r === 0) { f = (b & c) | (~b & d); g = j; }
+            else if (r === 1) { f = (d & b) | (~d & c); g = (5 * j + 1) & 15; }
+            else if (r === 2) { f = b ^ c ^ d;           g = (3 * j + 5) & 15; }
+            else              { f = c ^ (b | ~d);         g = (7 * j) & 15; }
+            var s = S[(r << 2) | (j & 3)], t = (a + f + W[base + g] + K[j]) | 0;
+            a = d; d = c; c = b; b = (b + ((t << s) | (t >>> (32 - s)))) | 0;
+        }
+        ha = (ha + a) | 0; hb = (hb + b) | 0; hc = (hc + c) | 0; hd = (hd + d) | 0;
+    }
+    var out = '', hs = [ha, hb, hc, hd];
+    for (var hi = 0; hi < 4; hi++)
+        for (var k = 0; k < 4; k++)
+            out += ((hs[hi] >>> (k * 8)) & 0xff).toString(16).padStart(2, '0');
+    return out;
+}
+function toHex(ab) {
+    var u = new Uint8Array(ab), s = '';
+    for (var i = 0; i < u.length; i++) s += u[i].toString(16).padStart(2, '0');
+    return s;
+}
+self.onmessage = async function(e) {
+    var buf = e.data.buffer;
+    var r = await Promise.all([
+        crypto.subtle.digest('SHA-1',   buf),
+        crypto.subtle.digest('SHA-256', buf),
+        crypto.subtle.digest('SHA-512', buf)
+    ]);
+    self.postMessage({ md5: md5(new Uint8Array(buf)), sha1: toHex(r[0]), sha256: toHex(r[1]), sha512: toHex(r[2]) });
+};
+`;
+        _hashWorkerUrl = URL.createObjectURL(new Blob([script], { type: 'application/javascript' }));
+        return _hashWorkerUrl;
+    }
+
+    // Returns a transferable copy of the data buffer (does not detach the stored original)
+    async function getBufCopy(dataOrFile) {
+        if (dataOrFile instanceof File) return dataOrFile.arrayBuffer();
+        const u8 = dataOrFile instanceof Uint8Array ? dataOrFile : new Uint8Array(dataOrFile);
+        return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    }
+
+    // Send a transferable ArrayBuffer to a fresh worker, resolve with hash results
+    function hashInWorker(buf) {
+        return new Promise((resolve, reject) => {
+            const w = new Worker(getHashWorkerUrl());
+            w.onmessage = (e) => { w.terminate(); resolve(e.data); };
+            w.onerror  = (e) => { w.terminate(); reject(new Error(e.message || 'Hash worker error')); };
+            w.postMessage({ buffer: buf }, [buf]);
+        });
+    }
+
+    // ---- Hash modal ----
+    async function showHashModal(filename, filetype, dataOrFile) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.display = 'flex';
+        overlay.innerHTML = `
+            <div class="modal-box" style="max-width:700px; width:95%;">
+                <button class="modal-close" id="hash-modal-close" title="Close">&times;</button>
+                <h2 style="font-size:16px; margin-bottom:4px; color:var(--text-primary);">&#35; Hashes</h2>
+                <p style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">${escapeHtml(filename)} &mdash; ${escapeHtml(filetype)}</p>
+                <div id="hash-modal-content" style="font-size:12px; color:var(--text-muted); padding:20px; text-align:center;">Computing hashes…</div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        const close = () => { overlay.remove(); };
+        overlay.querySelector('#hash-modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+        try {
+            const hashes = await computeHashes(dataOrFile);
+            const content = overlay.querySelector('#hash-modal-content');
+            content.innerHTML = `
+                <table style="width:100%; border-collapse:collapse; font-family:monospace; font-size:11px;">
+                    <thead><tr style="border-bottom:1px solid var(--border);">
+                        <th style="text-align:left; padding:6px 8px; color:var(--text-secondary); font-family:inherit;">Algorithm</th>
+                        <th style="text-align:left; padding:6px 8px; color:var(--text-secondary); font-family:inherit;">Hash</th>
+                    </tr></thead>
+                    <tbody>
+                        ${Object.entries(hashes).map(([k,v]) => `
+                            <tr style="border-bottom:1px solid var(--border-subtle, #333);">
+                                <td style="padding:6px 8px; color:var(--text-secondary); white-space:nowrap;">${escapeHtml(k)}</td>
+                                <td style="padding:6px 8px; color:var(--text-primary); word-break:break-all;">${escapeHtml(v)}</td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+            `;
+        } catch (e) {
+            overlay.querySelector('#hash-modal-content').textContent = 'Error: ' + e.message;
+        }
+    }
+
+    // ---- Hash TSV export ----
+    function exportHashesTsv() {
+        const entries = [...state.sourceFiles.entries()];
+        if (entries.length === 0) { toast('No files loaded to hash.', 'warning'); return; }
+
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.display = 'flex';
+        overlay.innerHTML = `
+            <div class="modal-box" style="max-width:460px; width:90%;">
+                <h2 style="font-size:16px; margin-bottom:8px; color:var(--text-primary);">&#35; Export Hashes</h2>
+                <p style="font-size:13px; color:var(--text-secondary); margin-bottom:6px;">Compute MD5 / SHA-1 / SHA-256 / SHA-512 for <strong>${entries.length}</strong> loaded file(s) and export as TSV.</p>
+                <p style="font-size:12px; color:var(--text-muted); margin-bottom:20px;">This may take a while for large files (ISO, LOD…).</p>
+                <div style="display:flex; gap:10px; justify-content:flex-end;">
+                    <button id="hash-confirm-cancel" style="padding:6px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-tertiary);color:var(--text-secondary);font:inherit;font-size:13px;cursor:pointer;">Cancel</button>
+                    <button id="hash-confirm-ok" style="padding:6px 16px;border:1px solid var(--accent,#58a6ff);border-radius:var(--radius-sm);background:var(--accent,#58a6ff);color:#fff;font:inherit;font-size:13px;cursor:pointer;font-weight:600;">Hash &amp; Export</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#hash-confirm-cancel').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        overlay.querySelector('#hash-confirm-ok').addEventListener('click', async () => {
+            overlay.remove();
+            await _doExportHashesTsv(entries);
+        });
+    }
+
+    async function _doExportHashesTsv(entries) {
+        const total = entries.length;
+        const rows = [['Filename', 'Filetype', 'MD5', 'SHA-1', 'SHA-256', 'SHA-512']];
+
+        showLoading('Computing hashes…', 0);
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        // Run up to CONCURRENCY files in parallel, each in its own worker
+        const CONCURRENCY = Math.min(navigator.hardwareConcurrency || 4, 4);
+        const results = new Array(total);
+        let completedCount = 0;
+        let nextIdx = 0;
+
+        async function runSlot() {
+            while (nextIdx < total) {
+                const i = nextIdx++;
+                const [name, { data, filetype }] = entries[i];
+                showLoading(`Hashing ${name}…`, completedCount / total);
+                const buf = await getBufCopy(data);
+                const h = await hashInWorker(buf);  // buf is transferred (zero-copy)
+                results[i] = [name, filetype, h.md5, h.sha1, h.sha256, h.sha512];
+                completedCount++;
+                showLoading(`Hashing… (${completedCount}/${total})`, completedCount / total);
+            }
+        }
+
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, runSlot));
+
+        for (const row of results) rows.push(row);
+        hideLoading();
+        const tsv = rows.map(r => r.map(c => (c || '').replace(/\t/g, ' ')).join('\t')).join('\n');
+        exportBlob(new Blob([tsv], { type: 'text/tab-separated-values' }), 'hashes.tsv');
+        toast(`Exported hashes for ${total} entries`, 'success');
+    }
+
     // ---- Mode switching ----
     function updateArchiveSelector() {
         if (state.archives.size <= 1) {
@@ -408,6 +685,7 @@
         state.pcxFiles = [];
         state.thumbCache.clear();
         state.lastTextData = null;
+        state.sourceFiles.clear();
 
         // Clear UI
         if (els.explorerPreview) els.explorerPreview.innerHTML = '';
@@ -451,6 +729,7 @@
                         state.archiveName = file.name;
                         state.archiveType = 'lod';
                         state.archives.set(file.name, { archive: state.archive, type: 'lod', data });
+                        state.sourceFiles.set(file.name, { data, filetype: 'LOD Archive' });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -462,6 +741,7 @@
                         state.archiveName = file.name;
                         state.archiveType = 'pak';
                         state.archives.set(file.name, { archive: state.archive, type: 'pak', data });
+                        state.sourceFiles.set(file.name, { data, filetype: 'PAK Archive' });
                         updateArchiveSelector();
                         buildPakFileList();
                         updateStandaloneUI();
@@ -471,6 +751,7 @@
                         showLoading('Parsing DEF file...');
                         const def = H3.DefFile.open(data);
                         state.standaloneFiles.set(file.name, { data, type: 'def', parsed: def });
+                        state.sourceFiles.set(file.name, { data, filetype: 'DEF File' });
                         if (!state.archive) {
                             buildStandaloneFileList();
                             setMode('defviewer');
@@ -481,6 +762,7 @@
                         if (H3.PCX.isPcx(data)) {
                             const img = H3.PCX.readPcx(data);
                             state.standaloneFiles.set(file.name, { data, type: 'pcx', parsed: img });
+                            state.sourceFiles.set(file.name, { data, filetype: 'PCX Image' });
                             if (!state.archive) {
                                 buildStandaloneFileList();
                                 setMode('explorer');
@@ -502,6 +784,7 @@
                         state.archiveName = file.name;
                         state.archiveType = 'lod';
                         state.archives.set(file.name, { archive: state.archive, type: 'lod', data });
+                        state.sourceFiles.set(file.name, { data, filetype: 'PAC Archive' });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -513,6 +796,7 @@
                         state.archiveName = file.name;
                         state.archiveType = 'snd';
                         state.archives.set(file.name, { archive: state.archive, type: 'snd', data });
+                        state.sourceFiles.set(file.name, { data, filetype: 'SND Archive' });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -524,6 +808,7 @@
                         state.archiveName = file.name;
                         state.archiveType = 'vid';
                         state.archives.set(file.name, { archive: state.archive, type: 'vid', data });
+                        state.sourceFiles.set(file.name, { data, filetype: 'VID Archive' });
                         updateArchiveSelector();
                         buildFileList();
                         updateStandaloneUI();
@@ -533,6 +818,7 @@
                         showLoading('Parsing D32 file...');
                         const def = H3.DefFile.open(data);
                         state.standaloneFiles.set(file.name, { data, type: 'def', parsed: def });
+                        state.sourceFiles.set(file.name, { data, filetype: 'D32 File' });
                         if (!state.archive) {
                             buildStandaloneFileList();
                             setMode('defviewer');
@@ -543,6 +829,7 @@
                         if (H3.FNT.isFnt(data)) {
                             const font = H3.FNT.readFnt(data);
                             state.standaloneFiles.set(file.name, { data, type: 'fnt', parsed: font });
+                            state.sourceFiles.set(file.name, { data, filetype: 'FNT Font' });
                             if (!state.archive) {
                                 buildStandaloneFileList();
                                 setMode('explorer');
@@ -875,7 +1162,7 @@
                 if (info.type === 'pcx') {
                     showImagePreview(preview, info.parsed.canvas, file.name, `${info.parsed.width}×${info.parsed.height}`, info.parsed.type);
                 } else if (info.type === 'def') {
-                    showDefPreview(preview, info.parsed, file.name);
+                    showDefPreview(preview, info.parsed, file.name, info.data);
                 } else if (info.type === 'fnt') {
                     showFntPreview(preview, info.parsed, file.name, info.data);
                 }
@@ -899,7 +1186,7 @@
                     }
                 } else if (ext === 'def') {
                     const def = H3.DefFile.open(data);
-                    showDefPreview(preview, def, file.name);
+                    showDefPreview(preview, def, file.name, data);
                 } else if (ext === 'fnt' && H3.FNT.isFnt(data)) {
                     const font = H3.FNT.readFnt(data);
                     showFntPreview(preview, font, file.name, data);
@@ -1007,6 +1294,7 @@
                         <button title="2x" data-zoom="2x">2×</button>
                         <button title="4x" data-zoom="4x">4×</button>
                         <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="border-toggle-btn">□ Border</button>
+                        ${rawData ? '<button title="Show file hashes" id="hash-img-btn"># Hash</button>' : ''}
                         <button title="Export as PNG" id="export-png-btn">💾 PNG</button>
                         ${rawData ? '<button title="Export original" id="export-orig-btn">💾 Orig</button>' : ''}
                     </div>
@@ -1061,6 +1349,9 @@
         // Export original
         const origBtn = container.querySelector('#export-orig-btn');
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+        // Hash
+        const hashImgBtn = container.querySelector('#hash-img-btn');
+        if (hashImgBtn && rawData) hashImgBtn.addEventListener('click', () => showHashModal(filename, type.toUpperCase(), rawData));
     }
 
     function showPakSheetPreview(container, sheets, rawChunks, sheetName) {
@@ -1194,11 +1485,13 @@
         toolbar.appendChild(btn);
     }
 
-    function showDefPreview(container, def, filename) {
+    function showDefPreview(container, def, filename, rawData = null) {
         const groups = def.getGroups();
         const size = def.getSize();
         const typeName = def.getTypeName() || 'UNKNOWN';
         const totalFrames = groups.reduce((s, g) => s + def.getFrameCount(g), 0);
+        const groupOptions = groups.map(g =>
+            `<option value="${g}">Group ${g} (${def.getFrameCount(g)} fr.)</option>`).join('');
 
         container.innerHTML = `
             <div class="preview-wrapper">
@@ -1211,6 +1504,12 @@
                         <span>${totalFrames} frames</span>
                     </div>
                     <div class="preview-toolbar">
+                        ${groups.length > 1 ? `<select id="def-preview-group" title="Select group">${groupOptions}</select>` : ''}
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-preview-border-btn">□ Border</button>
+                        <button title="Export all frames as PNG sequence" id="def-preview-seq">💾 Seq</button>
+                        <button title="Export animation as GIF" id="def-preview-gif">💾 GIF</button>
+                        ${rawData ? '<button title="Export original DEF file" id="def-preview-orig">💾 DEF</button>' : ''}
+                        <button title="Show file hashes" id="def-preview-hash"># Hash</button>
                         <button title="Open in Animation Viewer" id="btn-open-def-viewer">▶</button>
                     </div>
                 </div>
@@ -1218,35 +1517,129 @@
             </div>
         `;
 
-        // Auto-play animation loop in preview
         const body = $('#preview-def-body', container);
-        if (groups.length > 0) {
-            const frameCount = def.getFrameCount(groups[0]);
-            const c = document.createElement('canvas');
-            body.appendChild(c);
+        let currentGroup = groups.length > 0 ? groups[0] : 0;
+        let frameIdx = 0;
+        let previewTimer = null;
 
-            let frameIdx = 0;
-            function drawFrame() {
-                const canvas = def.readImage('combined', groups[0], frameIdx);
-                if (canvas) {
-                    c.width = canvas.width;
-                    c.height = canvas.height;
-                    c.getContext('2d').drawImage(canvas, 0, 0);
-                }
-                frameIdx = (frameIdx + 1) % frameCount;
+        const c = document.createElement('canvas');
+        body.appendChild(c);
+        if (state.showBorders) c.classList.add('img-border');
+
+        function drawFrame() {
+            const frameCount = def.getFrameCount(currentGroup);
+            if (frameCount === 0) return;
+            const canvas = def.readImage('combined', currentGroup, frameIdx);
+            if (canvas) {
+                c.width = canvas.width;
+                c.height = canvas.height;
+                c.getContext('2d').drawImage(canvas, 0, 0);
             }
-            drawFrame();
+            frameIdx = (frameIdx + 1) % frameCount;
+        }
 
-            if (frameCount > 1) {
-                const previewTimer = setInterval(drawFrame, 150);
-                // Clean up when container is replaced
-                const obs = new MutationObserver(() => {
-                    if (!container.contains(body)) {
-                        clearInterval(previewTimer);
-                        obs.disconnect();
+        function restartAnim() {
+            if (previewTimer) clearInterval(previewTimer);
+            if (def.getFrameCount(currentGroup) > 1) {
+                previewTimer = setInterval(drawFrame, 150);
+            }
+        }
+
+        drawFrame();
+        restartAnim();
+
+        const obs = new MutationObserver(() => {
+            if (!container.contains(body)) {
+                if (previewTimer) clearInterval(previewTimer);
+                obs.disconnect();
+            }
+        });
+        obs.observe(container, { childList: true, subtree: true });
+
+        // Group selector
+        const groupSel = container.querySelector('#def-preview-group');
+        if (groupSel) {
+            groupSel.addEventListener('change', () => {
+                currentGroup = parseInt(groupSel.value);
+                frameIdx = 0;
+                if (previewTimer) clearInterval(previewTimer);
+                drawFrame();
+                restartAnim();
+            });
+        }
+
+        // Border toggle
+        const borderBtn = container.querySelector('#def-preview-border-btn');
+        if (borderBtn) {
+            borderBtn.addEventListener('click', () => {
+                state.showBorders = !state.showBorders;
+                borderBtn.classList.toggle('active', state.showBorders);
+                c.classList.toggle('img-border', state.showBorders);
+            });
+        }
+
+        // Sequence export
+        const seqBtn = container.querySelector('#def-preview-seq');
+        if (seqBtn) {
+            seqBtn.addEventListener('click', () => {
+                const fc = def.getFrameCount(currentGroup);
+                for (let i = 0; i < fc; i++) {
+                    const canvas = def.readImage('combined', currentGroup, i);
+                    if (canvas) exportCanvasAsPng(canvas, `${filename.replace(/\.[^.]+$/, '')}_g${currentGroup}_${String(i).padStart(4, '0')}.png`);
+                }
+                toast(`Exported ${fc} frames`, 'success');
+            });
+        }
+
+        // GIF export
+        const gifBtn = container.querySelector('#def-preview-gif');
+        if (gifBtn) {
+            gifBtn.addEventListener('click', async () => {
+                if (typeof GIF === 'undefined') { toast('gif.js not loaded', 'error'); return; }
+                const fc = def.getFrameCount(currentGroup);
+                if (fc === 0) return;
+                let workerBlob = window._gifWorkerBlob;
+                if (!workerBlob) {
+                    try {
+                        const resp = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
+                        const text = await resp.text();
+                        workerBlob = URL.createObjectURL(new Blob([text], { type: 'application/javascript' }));
+                        window._gifWorkerBlob = workerBlob;
+                    } catch (e) { toast('Failed to load GIF worker: ' + e.message, 'error'); return; }
+                }
+                const gif = new GIF({ workers: 2, quality: 10, width: size[0], height: size[1], workerScript: workerBlob, transparent: 0xFF00FF, background: '#FF00FF' });
+                for (let i = 0; i < fc; i++) {
+                    const canvas = def.readImage('combined', currentGroup, i);
+                    if (canvas) {
+                        const cv = document.createElement('canvas');
+                        cv.width = size[0]; cv.height = size[1];
+                        const ctx = cv.getContext('2d');
+                        ctx.fillStyle = '#FF00FF';  // magenta = transparent key
+                        ctx.fillRect(0, 0, cv.width, cv.height);
+                        ctx.drawImage(canvas, 0, 0);
+                        gif.addFrame(cv, { delay: 150, copy: true });
                     }
+                }
+                toast('Encoding GIF...', 'info');
+                gif.on('finished', blob => {
+                    exportBlob(blob, `${filename.replace(/\.[^.]+$/, '')}_g${currentGroup}.gif`);
+                    toast('GIF exported!', 'success');
                 });
-                obs.observe(container, { childList: true, subtree: true });
+                gif.render();
+            });
+        }
+
+        // Orig export
+        const origBtn = container.querySelector('#def-preview-orig');
+        if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+
+        // Hash modal
+        const hashBtn = container.querySelector('#def-preview-hash');
+        if (hashBtn) {
+            if (rawData) {
+                hashBtn.addEventListener('click', () => showHashModal(filename, 'DEF', rawData));
+            } else {
+                hashBtn.style.display = 'none';
             }
         }
 
@@ -1254,9 +1647,8 @@
         const btn = $('#btn-open-def-viewer', container);
         if (btn) {
             btn.addEventListener('click', () => {
-                // Store DEF file as standalone for the viewer
                 if (!state.standaloneFiles.has(filename)) {
-                    state.standaloneFiles.set(filename, { data: null, type: 'def', parsed: def });
+                    state.standaloneFiles.set(filename, { data: rawData, type: 'def', parsed: def });
                 }
                 setMode('defviewer');
                 setTimeout(() => openDefInViewer(filename, def), 50);
@@ -1281,6 +1673,7 @@
                         <button title="2x" data-zoom="2x">2×</button>
                         <button title="4x" data-zoom="4x">4×</button>
                         <button title="Show glyph borders" class="toggle-btn${state.showBorders ? ' active' : ''}" id="fnt-border-btn">□ Border</button>
+                        ${rawData ? '<button title="Show file hashes" id="hash-fnt-btn"># Hash</button>' : ''}
                         <button title="Export as PNG" id="export-fnt-png-btn">💾 PNG</button>
                         ${rawData ? '<button title="Export original FNT" id="export-fnt-orig-btn">💾 FNT</button>' : ''}
                     </div>
@@ -1316,6 +1709,8 @@
             });
         }
 
+        const hashFntBtn = container.querySelector('#hash-fnt-btn');
+        if (hashFntBtn && rawData) hashFntBtn.addEventListener('click', () => showHashModal(filename, 'FNT', rawData));
         const pngBtn = container.querySelector('#export-fnt-png-btn');
         if (pngBtn) pngBtn.addEventListener('click', () => exportCanvasAsPng(sheet, filename.replace(/\.[^.]+$/, '_sheet.png')));
         const origBtn = container.querySelector('#export-fnt-orig-btn');
@@ -1438,6 +1833,7 @@
                     </div>
                     <div class="preview-toolbar">
                         ${buildEncodingSelectHtml(detectedEnc)}
+                        <button id="text-hash-btn" title="Show file hashes"># Hash</button>
                         <button id="text-save-btn" title="Save file">💾</button>
                     </div>
                 </div>
@@ -1450,6 +1846,10 @@
         container.querySelector('#text-encoding-select').addEventListener('change', (e) => {
             state.textEncoding = e.target.value;
             showTextPreview(container, data, filename);
+        });
+        container.querySelector('#text-hash-btn').addEventListener('click', () => {
+            const ext = filename.split('.').pop().toUpperCase();
+            showHashModal(filename, ext, data);
         });
         container.querySelector('#text-save-btn').addEventListener('click', () => {
             exportBlob(new Blob([data], { type: 'text/plain' }), filename);
@@ -1509,6 +1909,7 @@
                         <button data-zoom="2" title="2×">2×</button>
                         <button data-zoom="4" title="4×">4×</button>
                         <button id="pal-view-toggle" title="Toggle table view">≡ Table</button>
+                        ${rawData ? '<button id="pal-hash-btn" title="Show file hashes"># Hash</button>' : ''}
                         <button id="pal-export-png" title="Export as PNG">💾 PNG</button>
                         ${rawData ? '<button id="pal-export-orig" title="Export original PAL">💾 PAL</button>' : ''}
                     </div>
@@ -1560,6 +1961,8 @@
             const cv = buildCanvas(4);
             exportCanvasAsPng(cv, filename.replace(/\.[^.]+$/, '_palette.png'));
         });
+        const hashPalBtn = container.querySelector('#pal-hash-btn');
+        if (hashPalBtn && rawData) hashPalBtn.addEventListener('click', () => showHashModal(filename, 'PAL', rawData));
         const origBtn = container.querySelector('#pal-export-orig');
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
 
@@ -1629,6 +2032,7 @@
                     </div>
                     <div class="preview-toolbar">
                         <input id="ifr-search" type="text" placeholder="Search…" style="width:120px;padding:3px 8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font:inherit;font-size:12px;outline:none;">
+                        ${rawData ? '<button id="ifr-hash-btn" title="Show file hashes"># Hash</button>' : ''}
                         ${rawData ? '<button id="ifr-export-orig" title="Export original IFR">💾 IFR</button>' : ''}
                     </div>
                 </div>
@@ -1657,6 +2061,8 @@
             });
         });
 
+        const hashIfrBtn = container.querySelector('#ifr-hash-btn');
+        if (hashIfrBtn && rawData) hashIfrBtn.addEventListener('click', () => showHashModal(filename, 'IFR', rawData));
         const origBtn = container.querySelector('#ifr-export-orig');
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
@@ -1674,6 +2080,7 @@
                         <span>Binary · ${totalLines} lines</span>
                     </div>
                     <div class="preview-toolbar">
+                        <button id="hex-hash-btn" title="Show file hashes"># Hash</button>
                         <button id="hex-export-btn" title="Export original file">💾</button>
                     </div>
                 </div>
@@ -1719,6 +2126,9 @@
             }
         });
 
+        // Hash
+        const hexHashBtn = container.querySelector('#hex-hash-btn');
+        if (hexHashBtn) hexHashBtn.addEventListener('click', () => showHashModal(filename, filename.split('.').pop().toUpperCase() || 'BIN', data));
         // Export original
         const exportBtn = container.querySelector('#hex-export-btn');
         if (exportBtn) {
@@ -1916,6 +2326,7 @@
                         <span>${metaLabel}</span>
                     </div>
                     <div class="preview-toolbar">
+                        <button id="audio-hash-btn" title="Show file hashes"># Hash</button>
                         <button id="audio-export-btn" title="Export file">💾</button>
                     </div>
                 </div>
@@ -1930,6 +2341,11 @@
 
         const audioEl = container.querySelector('audio');
 
+        const hashAudioBtn = container.querySelector('#audio-hash-btn');
+        if (hashAudioBtn) {
+            const ft = mimeType === 'audio/mpeg' ? 'MP3' : 'WAV';
+            hashAudioBtn.addEventListener('click', () => showHashModal(filename, ft, data));
+        }
         const exportBtn = container.querySelector('#audio-export-btn');
         if (exportBtn) {
             const exportName = !filename.includes('.') ? filename + '.wav' : filename;
@@ -2998,6 +3414,8 @@
                 return;
             }
 
+            // Track the source ISO file for hash computation
+            state.sourceFiles.set(file.name, { data: file, filetype: 'ISO Image' });
             showLoading('Scanning ISO filesystem...', -1);
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
             const { directGameFiles, cabSetups, directMp3Files } = await ISOExtract.scanIso(file);
@@ -3099,12 +3517,15 @@
         if (ext === 'lod') {
             const archive = await H3.LodFile.open(data);
             state.archives.set(displayName, { archive, type: 'lod', data });
+            state.sourceFiles.set(displayName, { data, filetype: 'LOD (' + source + ')' });
         } else if (ext === 'snd') {
             const archive = await H3.SndFile.open(data);
             state.archives.set(displayName, { archive, type: 'snd', data });
+            state.sourceFiles.set(displayName, { data, filetype: 'SND (' + source + ')' });
         } else if (ext === 'vid') {
             const archive = await H3.VidFile.open(data);
             state.archives.set(displayName, { archive, type: 'vid', data });
+            state.sourceFiles.set(displayName, { data, filetype: 'VID (' + source + ')' });
         } else {
             state.standaloneFiles.set(displayName, { data, type: ext });
         }
@@ -3198,6 +3619,8 @@
                 return;
             }
 
+            // Track the source EXE file for hash computation
+            state.sourceFiles.set(file.name, { data: file, filetype: 'EXE Installer' });
             // Fast check: is data embedded in EXE or in external BIN?
             // Done before the slow LZMA parse so the BIN dialog appears instantly.
             const quickDataOffset = InnoExtract.getDataOffset(exeData);
@@ -3269,14 +3692,17 @@
                     const archive = await H3.LodFile.open(data);
                     const displayName = name + ' (GOG)';
                     state.archives.set(displayName, { archive, type: 'lod', data });
+                    state.sourceFiles.set(displayName, { data, filetype: 'LOD (GOG)' });
                 } else if (ext === 'snd') {
                     const archive = await H3.SndFile.open(data);
                     const displayName = name + ' (GOG)';
                     state.archives.set(displayName, { archive, type: 'snd', data });
+                    state.sourceFiles.set(displayName, { data, filetype: 'SND (GOG)' });
                 } else if (ext === 'vid') {
                     const archive = await H3.VidFile.open(data);
                     const displayName = name + ' (GOG)';
                     state.archives.set(displayName, { archive, type: 'vid', data });
+                    state.sourceFiles.set(displayName, { data, filetype: 'VID (GOG)' });
                 } else if (ext === 'mp3') {
                     // Collect mp3 files into a dedicated virtual archive
                     const mp3name = name.split('/').pop() || name;
@@ -3515,6 +3941,7 @@
         // Archive download buttons
         els.btnDownloadOriginal.addEventListener('click', downloadArchiveOriginal);
         els.btnDownloadZip.addEventListener('click', downloadArchiveAsZip);
+        els.btnDownloadHashes.addEventListener('click', exportHashesTsv);
 
         // Archive switcher
         els.archiveSelect.addEventListener('change', async () => {
