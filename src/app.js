@@ -53,7 +53,13 @@
         showBorders: false,
 
         // Active video/audio cleanup callback
-        activeVideoCleanup: null
+        activeVideoCleanup: null,
+
+        // Text encoding: 'auto' or a specific IANA label
+        textEncoding: 'auto',
+
+        // Last text preview data for re-rendering on encoding change
+        lastTextData: null
     };
 
     // ---- DOM refs ----
@@ -788,6 +794,7 @@
         });
 
         const preview = els.explorerPreview;
+        state.lastTextData = null; // clear until a text file is actually rendered
 
         try {
             if (file.standalone) {
@@ -1222,12 +1229,94 @@
         if (origBtn && rawData) origBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
 
+    // ---- Encoding detection ----
+    function detectEncoding(data) {
+        // BOM detection
+        if (data.length >= 3 && data[0] === 0xEF && data[1] === 0xBB && data[2] === 0xBF) return 'utf-8';
+        if (data.length >= 2 && data[0] === 0xFF && data[1] === 0xFE) return 'utf-16le';
+        if (data.length >= 2 && data[0] === 0xFE && data[1] === 0xFF) return 'utf-16be';
+
+        // Strict UTF-8 validation
+        try {
+            new TextDecoder('utf-8', { fatal: true }).decode(data);
+            return 'utf-8';
+        } catch { /* not valid UTF-8 */ }
+
+        // Byte-frequency scoring
+        const freq = new Uint32Array(256);
+        for (let i = 0; i < data.length; i++) freq[data[i]]++;
+
+        let highTotal = 0;
+        for (let b = 0x80; b <= 0xFF; b++) highTotal += freq[b];
+        if (highTotal === 0) return 'utf-8'; // pure ASCII
+
+        // --- CP1250 Polish/Central-European score ---
+        // ą=0xB9 and ł=0xB3 are unmistakably Polish: very frequent in Polish text,
+        // but in CP1251 they map to № (rare punctuation) and і (only Ukrainian).
+        // ż=0xBF (CP1250) vs ї (CP1251, Ukrainian) is also diagnostic.
+        const cp1250Score =
+            freq[0xB9] * 8 +  // ą
+            freq[0xB3] * 8 +  // ł
+            freq[0xBF] * 4 +  // ż
+            freq[0xA5] * 3 +  // Ą
+            freq[0xA3] * 3 +  // Ł
+            freq[0xCA] * 2 +  // Ę
+            freq[0xAF] * 2;   // Ż
+
+        // --- CP1251 Cyrillic/Russian score ---
+        // The most frequent Russian letters occupy the 0xC0-0xFF range exclusively.
+        // In CP1250 these same byte values are accented Latin chars (î, à, å, è, í …)
+        // which essentially never appear in Polish or Czech text.
+        const cp1251Score =
+            freq[0xEE] * 5 +  // о — most common Russian letter
+            freq[0xE0] * 5 +  // а — second most common
+            freq[0xE5] * 3 +  // е
+            freq[0xE8] * 3 +  // и
+            freq[0xED] * 3 +  // н
+            freq[0xF2] * 2 +  // т
+            freq[0xF0] * 2 +  // р
+            freq[0xE2] * 2 +  // в
+            freq[0xEB] * 2;   // л
+
+        if (cp1250Score > cp1251Score) return 'windows-1250';
+
+        // Cyrillic density fallback: Russian text fills almost the entire 0xC0-0xFF range
+        let cyrHigh = 0;
+        for (let b = 0xC0; b <= 0xFF; b++) cyrHigh += freq[b];
+        if (cp1251Score > 0 || cyrHigh / highTotal > 0.5) return 'windows-1251';
+
+        return 'windows-1252';
+    }
+
+    function buildEncodingSelectHtml(detectedEnc) {
+        const opts = [
+            ['auto',          `Auto (${detectedEnc})`],
+            ['utf-8',         'UTF-8'],
+            ['windows-1250',  'CP1250 – Central EU'],
+            ['windows-1251',  'CP1251 – Cyrillic'],
+            ['windows-1252',  'CP1252 – Western EU'],
+            ['iso-8859-1',    'ISO-8859-1'],
+            ['iso-8859-2',    'ISO-8859-2'],
+            ['koi8-r',        'KOI8-R'],
+        ];
+        return `<select id="text-encoding-select" title="Text encoding">${
+            opts.map(([v, l]) =>
+                `<option value="${v}"${state.textEncoding === v ? ' selected' : ''}>${escapeHtml(l)}</option>`
+            ).join('')
+        }</select>`;
+    }
+
     function showTextPreview(container, data, filename) {
+        // Persist for re-render on encoding change
+        state.lastTextData = { data, filename };
+
+        const detectedEnc = detectEncoding(data);
+        const enc = state.textEncoding === 'auto' ? detectedEnc : state.textEncoding;
         let text;
         try {
-            text = new TextDecoder('utf-8').decode(data);
+            text = new TextDecoder(enc, { fatal: true }).decode(data);
         } catch {
-            text = new TextDecoder('latin1').decode(data);
+            text = new TextDecoder('windows-1252').decode(data);
         }
 
         container.innerHTML = `
@@ -1237,12 +1326,20 @@
                     <div class="preview-meta">
                         <span>${formatSize(data.length)}</span>
                     </div>
+                    <div class="preview-toolbar">
+                        ${buildEncodingSelectHtml(detectedEnc)}
+                    </div>
                 </div>
                 <div class="preview-body" style="align-items:flex-start; justify-content:flex-start;">
                     <div class="preview-text">${escapeHtml(text)}</div>
                 </div>
             </div>
         `;
+
+        container.querySelector('#text-encoding-select').addEventListener('change', (e) => {
+            state.textEncoding = e.target.value;
+            showTextPreview(container, data, filename);
+        });
     }
 
     function showBinaryPreview(container, data, filename) {
