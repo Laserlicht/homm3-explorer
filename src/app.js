@@ -4281,6 +4281,18 @@ self.onmessage = async function(e) {
         initRefs();
         setupFileInput();
 
+        // Keep --app-height in sync with the real visible viewport (fixes Android 100vh issue)
+        function updateAppHeight() {
+            const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            document.documentElement.style.setProperty('--app-height', h + 'px');
+        }
+        updateAppHeight();
+        window.addEventListener('resize', updateAppHeight);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', updateAppHeight);
+            window.visualViewport.addEventListener('scroll', updateAppHeight);
+        }
+
         // Drag & drop on the whole page
         const mainContent = $('#main-content');
         mainContent.addEventListener('dragover', (e) => {
