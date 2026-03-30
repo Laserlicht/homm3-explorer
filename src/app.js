@@ -2616,10 +2616,10 @@ self.onmessage = async function(e) {
                         ${rawData ? `<button title="Export original" id="map-export-btn">💾 ${isH3C ? 'H3C' : 'H3M'}</button>` : ''}
                     </div>
                 </div>
+                ${mapInfo ? `
                 <div class="preview-body map-preview-body">
                     <div class="map-preview-card">
                         <div class="map-preview-icon">${icon}</div>
-                        ${mapInfo ? `
                         <h2 class="map-preview-name">${escapeHtml(mapInfo.name)}</h2>
                         <div class="map-preview-meta-grid">
                             <div class="map-meta-item"><span class="map-meta-label">Version</span><span class="map-meta-value">${escapeHtml(mapInfo.versionName)}</span></div>
@@ -2628,9 +2628,14 @@ self.onmessage = async function(e) {
                             <div class="map-meta-item"><span class="map-meta-label">File</span><span class="map-meta-value">${escapeHtml(formatSize(rawData ? rawData.length : 0))}</span></div>
                         </div>
                         ${mapInfo.description ? `<p class="map-preview-desc">${escapeHtml(mapInfo.description)}</p>` : ''}
-                        ` : `<p style="color:var(--text-muted);margin-top:12px;">Could not parse map</p>`}
                     </div>
-                </div>
+                </div>` : `
+                <div class="preview-body">
+                    <div style="text-align:center;color:var(--text-muted);">
+                        <div style="font-size:40px;margin-bottom:12px;">${icon}</div>
+                        <div>Could not parse map header</div>
+                    </div>
+                </div>`}
             </div>
         `;
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
