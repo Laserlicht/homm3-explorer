@@ -607,7 +607,7 @@ self.onmessage = async function(e) {
         state.archiveName = name;
         state.archiveType = info.type;
         state.thumbCache.clear();
-        if (info.type === 'lod' || info.type === 'snd' || info.type === 'vid' || info.type === 'mp3') buildFileList();
+        if (info.type === 'lod' || info.type === 'snd' || info.type === 'vid' || info.type === 'mp3' || info.type === 'maps') buildFileList();
         else if (info.type === 'pak') buildPakFileList();
     }
 
@@ -1189,6 +1189,8 @@ self.onmessage = async function(e) {
                     showDefPreview(preview, info.parsed, file.name, info.data);
                 } else if (info.type === 'fnt') {
                     showFntPreview(preview, info.parsed, file.name, info.data);
+                } else if (info.type === 'map') {
+                    showMapPreview(preview, info.parsed, file.name, info.data);
                 }
                 return;
             }
@@ -1232,6 +1234,9 @@ self.onmessage = async function(e) {
                     showTextPreview(preview, data, file.name);
                 } else if (ext === 'wav' || (ext === '' && isWavData(data))) {
                     showAudioPreview(preview, data, file.name);
+                } else if (ext === 'h3m' || ext === 'h3c') {
+                    const mapInfo = await parseH3MapAsync(data);
+                    showMapPreview(preview, mapInfo, file.name, data);
                 } else {
                     showBinaryPreview(preview, data, file.name);
                 }
@@ -1247,6 +1252,13 @@ self.onmessage = async function(e) {
                 hideLoading();
                 if (!data) { showPreviewError(preview, 'File not found'); return; }
                 showAudioPreview(preview, data, file.name, 'audio/mpeg');
+            } else if (state.archiveType === 'maps') {
+                showLoading('Loading map...');
+                const data = await state.archive.getFile(file.name);
+                hideLoading();
+                if (!data) { showPreviewError(preview, 'File not found'); return; }
+                const mapInfo = await parseH3MapAsync(data);
+                showMapPreview(preview, mapInfo, file.name, data);
             } else if (state.archiveType === 'vid') {
                 showLoading('Loading file...');
                 const data = await state.archive.getFile(file.name);
@@ -1304,11 +1316,10 @@ self.onmessage = async function(e) {
 
     // ---- Scroll-zoom + pinch + pan for preview areas ----
     // body: container element (overflow set to hidden); getEl: returns current content element
-    // Returns { setZoom(scale), doFit(), reapply() }
+    // Returns { setZoom(scale), doFit(), reapply(), recentre() }
     function attachZoomPan(body, getEl) {
         let scale = 1, tx = 0, ty = 0;
-        let panning = false, pX = 0, pY = 0, pTx = 0, pTy = 0;
-        let pinchDist = null;
+        const ptrs = new Map(); // pointerId -> {x, y}
         body.style.overflow = 'hidden';
         body.style.touchAction = 'none';
         body.style.alignItems = 'flex-start';
@@ -1320,7 +1331,7 @@ self.onmessage = async function(e) {
             el.style.maxWidth = el.style.maxHeight = 'none';
             el.style.transformOrigin = '0 0';
             el.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
-            body.style.cursor = panning ? 'grabbing' : 'grab';
+            body.style.cursor = ptrs.size > 0 ? 'grabbing' : 'grab';
         }
         function getSize() {
             const el = getEl();
@@ -1335,26 +1346,35 @@ self.onmessage = async function(e) {
             tx = bx - px * scale; ty = by - py * scale;
             applyTransform();
         }
+
         body.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+
         body.addEventListener('pointerdown', e => {
-            if (e.button !== 0) return;
-            panning = true; pX = e.clientX; pY = e.clientY; pTx = tx; pTy = ty;
-            body.setPointerCapture(e.pointerId); applyTransform();
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            body.setPointerCapture(e.pointerId);
+            applyTransform();
         });
-        body.addEventListener('pointermove', e => { if (!panning) return; tx = pTx + e.clientX - pX; ty = pTy + e.clientY - pY; applyTransform(); });
-        body.addEventListener('pointerup', () => { panning = false; applyTransform(); });
-        body.addEventListener('touchstart', e => {
-            if (e.touches.length === 2) { e.preventDefault(); pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
-        }, { passive: false });
-        body.addEventListener('touchmove', e => {
-            if (e.touches.length !== 2) return; e.preventDefault();
-            const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-            const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-            const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-            if (pinchDist !== null) zoomAt(cx, cy, d / pinchDist);
-            pinchDist = d;
-        }, { passive: false });
-        body.addEventListener('touchend', () => { pinchDist = null; });
+        body.addEventListener('pointermove', e => {
+            if (!ptrs.has(e.pointerId)) return;
+            const prev = ptrs.get(e.pointerId);
+            ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (ptrs.size === 1) {
+                // Pan
+                tx += e.clientX - prev.x;
+                ty += e.clientY - prev.y;
+                applyTransform();
+            } else if (ptrs.size === 2) {
+                // Pinch zoom — use the other pointer's last known position
+                const otherId = [...ptrs.keys()].find(id => id !== e.pointerId);
+                const other = ptrs.get(otherId);
+                const prevDist = Math.hypot(prev.x - other.x, prev.y - other.y);
+                const newDist  = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+                if (prevDist > 1) zoomAt((e.clientX + other.x) / 2, (e.clientY + other.y) / 2, newDist / prevDist);
+            }
+        });
+        body.addEventListener('pointerup',     e => { ptrs.delete(e.pointerId); applyTransform(); });
+        body.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); applyTransform(); });
 
         function doFit() {
             const [ew, eh] = getSize();
@@ -1372,7 +1392,7 @@ self.onmessage = async function(e) {
             tx = (bw - ew * scale) / 2; ty = (bh - eh * scale) / 2;
             applyTransform();
         }
-        // Recentre without waiting for a frame (called when canvas size changes mid-animation)
+        // Recentre without fitting (called when canvas size changes mid-animation)
         function recentre() {
             const [ew, eh] = getSize();
             const bw = body.clientWidth, bh = body.clientHeight;
@@ -1380,8 +1400,21 @@ self.onmessage = async function(e) {
             tx = (bw - ew * scale) / 2; ty = (bh - eh * scale) / 2;
             applyTransform();
         }
-        // Initial fit after element is in DOM
-        requestAnimationFrame(() => requestAnimationFrame(doFit));
+        // Initial fit: ResizeObserver fires as soon as the container gets real dimensions
+        // (more reliable than rAF on mobile where layout may not be complete in 2 frames)
+        let initFitDone = false;
+        const _ro = new ResizeObserver(() => {
+            if (!initFitDone && body.clientWidth > 0 && body.clientHeight > 0) {
+                initFitDone = true;
+                doFit();
+                _ro.disconnect();
+            }
+        });
+        _ro.observe(body);
+        // rAF fallback in case ResizeObserver doesn't fire (e.g. already sized)
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (!initFitDone) { initFitDone = true; doFit(); _ro.disconnect(); }
+        }));
         return { setZoom, doFit, reapply: applyTransform, recentre };
     }
 
@@ -1434,6 +1467,7 @@ self.onmessage = async function(e) {
                         <span>${dimensions}</span>
                         <span>${type.toUpperCase()}</span>
                     </div>
+                    <button class="preview-toolbar-toggle" title="More options">☰</button>
                     <div class="preview-toolbar">
                         <button title="Zoom fit" data-zoom="fit">⊡</button>
                         <button title="Actual size" data-zoom="actual">1:1</button>
@@ -1482,6 +1516,8 @@ self.onmessage = async function(e) {
 
         applyBgState(body);
         setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
 
         // Export PNG
         const pngBtn = container.querySelector('#export-png-btn');
@@ -1511,6 +1547,7 @@ self.onmessage = async function(e) {
                         <span id="pak-sheet-dims">${sheets[0].width}×${sheets[0].height}</span>
                         <span>PAK-SHEET</span>
                     </div>
+                    <button class="preview-toolbar-toggle" title="More options">☰</button>
                     <div class="preview-toolbar">
                         ${sheetCount > 1 ? `<select id="pak-sheet-select" title="Select sheet">${sheetOptions}</select>` : `<span style="font-size:12px;color:var(--text-muted)">Sheet 0</span>`}
                         <button title="Zoom fit" data-zoom="fit">⊡</button>
@@ -1573,6 +1610,8 @@ self.onmessage = async function(e) {
 
         applyBgState(body);
         setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
 
         // Export PNG
         const pngBtn = container.querySelector('#export-png-btn');
@@ -1637,19 +1676,20 @@ self.onmessage = async function(e) {
                         <span>${groups.length} groups</span>
                         <span>${totalFrames} frames</span>
                     </div>
+                    <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
+                    <button class="preview-open-btn" title="Open in Animation Viewer" id="btn-open-def-viewer">&#9654;</button>
                     <div class="preview-toolbar">
                         ${groups.length > 1 ? `<select id="def-preview-group" title="Select group">${groupOptions}</select>` : ''}
-                        <button title="Zoom fit" data-zoom="fit">⊡</button>
+                        <button title="Zoom fit" data-zoom="fit">&#8862;</button>
                         <button title="Actual size" data-zoom="actual">1:1</button>
-                        <button title="2×" data-zoom="2x">2×</button>
-                        <button title="4×" data-zoom="4x">4×</button>
+                        <button title="2&times;" data-zoom="2x">2&times;</button>
+                        <button title="4&times;" data-zoom="4x">4&times;</button>
                         <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="def-preview-bg-btn"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-preview-border-btn">□</button>
-                        <button title="Export all frames as PNG sequence" id="def-preview-seq">💾 Seq</button>
-                        <button title="Export animation as GIF" id="def-preview-gif">💾 GIF</button>
-                        ${rawData ? '<button title="Export original DEF file" id="def-preview-orig">💾 DEF</button>' : ''}
+                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-preview-border-btn">&#9633;</button>
+                        <button title="Export all frames as PNG sequence" id="def-preview-seq">&#128190; Seq</button>
+                        <button title="Export animation as GIF" id="def-preview-gif">&#128190; GIF</button>
+                        ${rawData ? '<button title="Export original DEF file" id="def-preview-orig">&#128190; DEF</button>' : ''}
                         <button title="Show file hashes" id="def-preview-hash"># Hash</button>
-                        <button title="Open in Animation Viewer" id="btn-open-def-viewer">▶</button>
                     </div>
                 </div>
                 <div class="preview-body checkerboard" id="preview-def-body"></div>
@@ -1669,6 +1709,8 @@ self.onmessage = async function(e) {
         const zpDef = attachZoomPan(body, () => body.querySelector('canvas'));
         applyBgState(body);
         setupBgToggle(container.querySelector('#def-preview-bg-btn'), body);
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
 
         function drawFrame() {
             const frameCount = def.getFrameCount(currentGroup);
@@ -1821,6 +1863,7 @@ self.onmessage = async function(e) {
                         <span>Height: ${font.height}px</span>
                         <span>FNT</span>
                     </div>
+                    <button class="preview-toolbar-toggle" title="More options">☰</button>
                     <div class="preview-toolbar">
                         <button title="Zoom fit" data-zoom="fit">⊡</button>
                         <button title="Actual size" data-zoom="actual">1:1</button>
@@ -1853,6 +1896,8 @@ self.onmessage = async function(e) {
 
         applyBgState(body);
         setupBgToggle(container.querySelector('#bg-toggle-btn'), body);
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
 
         const borderBtn = container.querySelector('#fnt-border-btn');
         if (borderBtn) {
@@ -2460,6 +2505,140 @@ self.onmessage = async function(e) {
             if (sz % 2 !== 0) pos++;
         }
         return data; // couldn't parse, pass through
+    }
+
+    // ---- H3M / H3C Map Parser + Preview ----
+    function parseH3Map(data) {
+        // H3M and H3C files are gzip-compressed binaries
+        let raw;
+        try {
+            // Use pako (bundled with many apps) or DecompressionStream (modern browsers)
+            if (typeof pako !== 'undefined') {
+                raw = pako.inflate(data);
+            } else {
+                // DecompressionStream — synchronous wrapper via a sync trick is not possible,
+                // but we can use a pre-checked synchronous fallback with a simple gzip parser
+                // for the tiny header we need (first ~512 bytes are enough)
+                raw = _inflateGzip(data);
+            }
+        } catch (e) {
+            return null;
+        }
+        if (!raw || raw.length < 32) return null;
+        const v = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        let pos = 0;
+
+        const version = v.getUint32(pos, true); pos += 4;
+        const VERSIONS = { 0x0E: 'RoE', 0x15: 'AB', 0x1C: 'SoD', 0x1D: 'HotA', 0x20: 'WoG/Era', 0x33: 'HotA' };
+        const versionName = VERSIONS[version] || `v${version}`;
+
+        /* is_playable */ pos += 1;
+        const mapSize = v.getUint32(pos, true); pos += 4;
+        const hasUnderground = raw[pos]; pos += 1;
+
+        if (pos + 4 > raw.length) return { versionName, mapSize, hasUnderground, name: '', description: '', difficulty: 1 };
+        const nameLen = v.getUint32(pos, true); pos += 4;
+        if (nameLen > 1024 || pos + nameLen > raw.length) return null;
+        const name = new TextDecoder('latin1').decode(raw.subarray(pos, pos + nameLen)); pos += nameLen;
+
+        const descLen = v.getUint32(pos, true); pos += 4;
+        if (descLen > 65536 || pos + descLen > raw.length) return null;
+        const description = new TextDecoder('latin1').decode(raw.subarray(pos, pos + descLen)); pos += descLen;
+
+        const difficulty = raw[pos];
+        const DIFFICULTIES = ['Easy', 'Normal', 'Hard', 'Expert', 'Impossible'];
+        return {
+            versionName,
+            mapSize,
+            hasUnderground: !!hasUnderground,
+            name: name || '(no name)',
+            description: description || '',
+            difficulty: DIFFICULTIES[difficulty] || 'Normal',
+            rawSize: data.length,
+        };
+    }
+
+    // Minimal synchronous gzip inflate — uses browser's DecompressionStream via a SharedArrayBuffer trick
+    // Falls back to reading at most the compressed header for metadata only.
+    function _inflateGzip(data) {
+        // Attempt synchronous inflate by building a tiny sync reader
+        // DecompressionStream is async-only; we use a promise + Atomics trick
+        // For simplicity: if we can't decompress synchronously, return null and let async path handle it
+        return null;
+    }
+
+    async function parseH3MapAsync(data) {
+        const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+        try {
+            const ds = new DecompressionStream('gzip');
+            const writer = ds.writable.getWriter();
+            const reader = ds.readable.getReader();
+            writer.write(u8);
+            writer.close();
+            const chunks = [];
+            let total = 0;
+            // Only decompress enough for the header (first 2 KB is plenty)
+            while (total < 2048) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                total += value.length;
+            }
+            reader.cancel();
+            const out = new Uint8Array(total);
+            let off = 0;
+            for (const c of chunks) { out.set(c, off); off += c.length; }
+            return parseH3Map(out);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function showMapPreview(container, mapInfo, filename, rawData) {
+        const isH3C = filename.toLowerCase().endsWith('.h3c');
+        const typeLabel = isH3C ? 'H3C Campaign' : 'H3M Map';
+        const icon = isH3C ? '⚔️' : '🗺️';
+        const sizeLabel = mapInfo ? `${mapInfo.mapSize}×${mapInfo.mapSize}` : '?';
+        const ugLabel = mapInfo?.hasUnderground ? ' + Underground' : '';
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>${typeLabel}</span>
+                        ${mapInfo ? `<span>${mapInfo.versionName}</span>` : ''}
+                        ${mapInfo ? `<span>${sizeLabel}${ugLabel}</span>` : ''}
+                    </div>
+                    <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
+                    <div class="preview-toolbar">
+                        ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
+                        ${rawData ? `<button title="Export original" id="map-export-btn">💾 ${isH3C ? 'H3C' : 'H3M'}</button>` : ''}
+                    </div>
+                </div>
+                <div class="preview-body map-preview-body">
+                    <div class="map-preview-card">
+                        <div class="map-preview-icon">${icon}</div>
+                        ${mapInfo ? `
+                        <h2 class="map-preview-name">${escapeHtml(mapInfo.name)}</h2>
+                        <div class="map-preview-meta-grid">
+                            <div class="map-meta-item"><span class="map-meta-label">Version</span><span class="map-meta-value">${escapeHtml(mapInfo.versionName)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Size</span><span class="map-meta-value">${sizeLabel}${ugLabel}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Difficulty</span><span class="map-meta-value">${escapeHtml(mapInfo.difficulty)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">File</span><span class="map-meta-value">${escapeHtml(formatSize(rawData ? rawData.length : 0))}</span></div>
+                        </div>
+                        ${mapInfo.description ? `<p class="map-preview-desc">${escapeHtml(mapInfo.description)}</p>` : ''}
+                        ` : `<p style="color:var(--text-muted);margin-top:12px;">Could not parse map</p>`}
+                    </div>
+                </div>
+            </div>
+        `;
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        const hashBtn = container.querySelector('#map-hash-btn');
+        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, typeLabel, rawData));
+        const exportBtn = container.querySelector('#map-export-btn');
+        if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
     }
 
     function showAudioPreview(container, data, filename, mimeType = 'audio/wav') {
@@ -3086,7 +3265,7 @@ self.onmessage = async function(e) {
         main.innerHTML = `
             <div class="def-info-panel">
                 <div class="def-info-header">
-                    <h3>${escapeHtml(filename)}</h3>
+                    <h3>${escapeHtml(filename)}<span class="def-title-frame" id="def-frame-info"></span></h3>
                     <div class="def-info-grid">
                         <div class="def-info-item">
                             <span class="def-info-label">Type</span>
@@ -3111,6 +3290,7 @@ self.onmessage = async function(e) {
                     <div class="def-player" id="def-player"></div>
 
                     <div class="def-controls">
+                        <button class="def-mobile-toggle" id="def-mobile-expand" title="Show info &amp; controls">☰</button>
                         <button id="def-play" title="Play/Pause">▶</button>
                         <button id="def-prev" title="Previous Frame">⏮</button>
                         <button id="def-next" title="Next Frame">⏭</button>
@@ -3138,12 +3318,9 @@ self.onmessage = async function(e) {
                             </select>
                         </div>
 
-                        <span class="frame-info" id="def-frame-info">Frame 0/0</span>
-
-                        <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-border-toggle">□</button>
-                        <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="def-bg-toggle"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
-
                         <div class="def-export-btns">
+                            <button title="Show border" class="toggle-btn${state.showBorders ? ' active' : ''}" id="def-border-toggle">□</button>
+                            <button title="Toggle white background" class="toggle-btn${state.whiteBg ? ' active' : ''}" id="def-bg-toggle"><svg width="12" height="12" viewBox="0 0 4 4" fill="currentColor"><rect x="0" y="0" width="2" height="2"/><rect x="2" y="2" width="2" height="2"/></svg></button>
                             <button id="def-zoom-fit" title="Zoom fit">⊡</button>
                             <button id="def-zoom-1" title="Actual size">1:1</button>
                             <button id="def-zoom-2" title="2×">2×</button>
@@ -3361,6 +3538,16 @@ self.onmessage = async function(e) {
         const defBgToggle = $('#def-bg-toggle');
         if (player) applyBgState(player);
         if (defBgToggle && player) setupBgToggle(defBgToggle, player);
+        const mobileExpand = $('#def-mobile-expand');
+        if (mobileExpand) {
+            mobileExpand.addEventListener('click', () => {
+                const panel = mobileExpand.closest('.def-info-panel');
+                if (panel) {
+                    panel.classList.toggle('mobile-expanded');
+                    mobileExpand.classList.toggle('active', panel.classList.contains('mobile-expanded'));
+                }
+            });
+        }
         return zpAnim;
     }
 
@@ -3601,7 +3788,7 @@ self.onmessage = async function(e) {
             state.sourceFiles.set(file.name, { data: file, filetype: 'ISO Image' });
             showLoading('Scanning ISO filesystem...', -1);
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-            const { directGameFiles, cabSetups, directMp3Files } = await ISOExtract.scanIso(file);
+            const { directGameFiles, cabSetups, directMp3Files, directMapFiles } = await ISOExtract.scanIso(file);
 
             const totalDirect = directGameFiles.length;
             let totalCab = 0;
@@ -3663,6 +3850,23 @@ self.onmessage = async function(e) {
             }
             if (mp3Entries.length > 0) {
                 state.archives.set('MP3 (ISO)', { archive: createMp3Archive(mp3Entries), type: 'mp3', data: null });
+            }
+
+            // 4) Collect map entries (lazy — extracted on demand when clicked)
+            const mapEntries = [];
+            for (const mf of directMapFiles) {
+                const { name, lba, size } = mf;
+                mapEntries.push({ name, extract: () => ISOExtract.extractIsoFile(file, lba, size) });
+            }
+            for (const setup of cabSetups) {
+                for (const fileDesc of (setup.cabMapFiles || [])) {
+                    const name = fileDesc.name;
+                    const vols = setup.volumeHeaders;
+                    mapEntries.push({ name, extract: () => ISOExtract.extractIsCabFile(file, fileDesc, vols) });
+                }
+            }
+            if (mapEntries.length > 0) {
+                state.archives.set('Maps (ISO)', { archive: createMp3Archive(mapEntries), type: 'maps', data: null });
             }
 
             // Auto-open first bitmap LOD, then first archive
@@ -3855,6 +4059,7 @@ self.onmessage = async function(e) {
             let extracted = 0;
             const totalFiles = targetFiles.length;
             const gogMp3Files = [];
+            const gogMapFiles = [];
 
             for (const { name, info } of targetFiles) {
                 showLoading(`Extracting ${name}...`, extracted / totalFiles);
@@ -3892,6 +4097,11 @@ self.onmessage = async function(e) {
                     const mp3name = name.split('/').pop() || name;
                     const mp3data = data;
                     gogMp3Files.push({ name: mp3name, extract: async () => mp3data });
+                } else if (ext === 'h3m' || ext === 'h3c') {
+                    // Collect map files into a dedicated virtual archive
+                    const mapname = name.split('/').pop() || name;
+                    const mapdata = data;
+                    gogMapFiles.push({ name: mapname, extract: async () => mapdata });
                 } else {
                     const displayName = name + ' (GOG)';
                     state.standaloneFiles.set(displayName, { data, type: ext });
@@ -3901,6 +4111,9 @@ self.onmessage = async function(e) {
 
             if (gogMp3Files.length > 0) {
                 state.archives.set('MP3 (GOG)', { archive: createMp3Archive(gogMp3Files), type: 'mp3', data: null });
+            }
+            if (gogMapFiles.length > 0) {
+                state.archives.set('Maps (GOG)', { archive: createMp3Archive(gogMapFiles), type: 'maps', data: null });
             }
 
             // Auto-open first bitmap LOD

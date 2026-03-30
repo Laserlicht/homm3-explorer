@@ -762,6 +762,69 @@ body {
     cursor: pointer;
 }
 
+/* Always-visible button in preview header (e.g. Open in Viewer ▶) */
+.preview-open-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+    font-size: 12px;
+    white-space: nowrap;
+}
+.preview-open-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Frame counter inline in animation viewer title */
+.def-title-frame {
+    font-size: 12px;
+    font-weight: 400;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    margin-left: 8px;
+}
+
+/* Mobile collapse toggles — hidden on desktop, shown via media query */
+.preview-toolbar-toggle,
+.def-mobile-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition);
+    font-size: 14px;
+}
+.preview-toolbar-toggle {
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+    margin-left: auto;
+}
+.def-mobile-toggle {
+    min-width: 34px;
+    height: 32px;
+    padding: 0 6px;
+}
+.preview-toolbar-toggle.active,
+.def-mobile-toggle.active {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .video-controls {
     display: flex;
     align-items: center;
@@ -859,6 +922,68 @@ body {
 .preview-body.zoom-actual img {
     max-width: none;
     max-height: none;
+}
+
+/* Map preview */
+.map-preview-body {
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    overflow: auto;
+    padding: 20px;
+}
+.map-preview-card {
+    max-width: 560px;
+    width: 100%;
+}
+.map-preview-icon {
+    font-size: 40px;
+    line-height: 1;
+    margin-bottom: 12px;
+}
+.map-preview-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 12px;
+}
+.map-preview-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    background: var(--bg-secondary);
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    margin: 12px 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.map-preview-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 10px;
+    margin-top: 4px;
+}
+.map-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+}
+.map-meta-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-muted);
+}
+.map-meta-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
 }
 
 /* Text preview */
@@ -1082,13 +1207,6 @@ body {
 .def-controls .render-mode label {
     font-size: 11px;
     color: var(--text-muted);
-}
-
-.def-controls .frame-info {
-    margin-left: auto;
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
 }
 
 .def-frames-panel {
@@ -1405,6 +1523,36 @@ body {
         border-radius: 0;
         padding: 16px 14px;
     }
+}
+
+/* ---- Additional mobile: collapsible toolbars + animation controls ---- */
+@media (max-width: 768px) {
+    /* Show mobile toggle buttons */
+    .preview-toolbar-toggle { display: flex; }
+    .def-mobile-toggle { display: flex; }
+
+    /* Preview header: hide toolbar & meta by default */
+    .preview-toolbar { display: none !important; }
+    .preview-meta   { display: none; }
+    .preview-header.toolbar-expanded .preview-toolbar { display: flex !important; width: 100%; order: 10; flex-wrap: wrap; }
+    .preview-header.toolbar-expanded .preview-meta   { display: flex; width: 100%; order: 9; }
+
+    /* Animation viewer: hide info header by default */
+    .def-info-header { display: none; }
+    .def-info-panel.mobile-expanded .def-info-header { display: block; }
+
+    /* Animation controls: hide extra items by default, show when expanded */
+    .def-controls .speed-control,
+    .def-controls .group-select,
+    .def-controls .render-mode,
+    .def-controls .def-export-btns { display: none; }
+    .def-info-panel.mobile-expanded .def-controls .speed-control,
+    .def-info-panel.mobile-expanded .def-controls .group-select,
+    .def-info-panel.mobile-expanded .def-controls .render-mode,
+    .def-info-panel.mobile-expanded .def-controls .def-export-btns { display: flex; }
+
+    /* Frames strip: a bit shorter on mobile */
+    .def-frames-panel { height: 90px; min-height: 60px; }
 }
 
 /* ---- Resize handle ---- */
