@@ -2633,7 +2633,7 @@ self.onmessage = async function(e) {
                 <div class="preview-body">
                     <div style="text-align:center;color:var(--text-muted);">
                         <div style="font-size:40px;margin-bottom:12px;">${icon}</div>
-                        <div>Could not parse map header</div>
+                        <div>Could not parse map/campaign</div>
                     </div>
                 </div>`}
             </div>
