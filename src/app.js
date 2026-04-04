@@ -744,6 +744,18 @@ self.onmessage = async function(e) {
                 continue;
             }
 
+            // SIT (StuffIt 5) archives — read fully then extract game files
+            if (ext === 'sit') {
+                try {
+                    await processSitFile(file);
+                } catch (err) {
+                    console.error(err);
+                    toast(`Error loading ${file.name}: ${err.message}`, 'error');
+                    hideLoading();
+                }
+                continue;
+            }
+
             const data = new Uint8Array(await file.arrayBuffer());
 
                 try {
@@ -2481,6 +2493,92 @@ self.onmessage = async function(e) {
         return buildPcmWav(pcm.subarray(0, Math.min(outIdx, numSamples * channels)), sampleRate, channels, 16);
     }
 
+    // Decode AIFF-C ima4 (IMA ADPCM 4:1) to PCM WAV.
+    // Used for Mac HoMM3 music files inside StuffIt archives.
+    function decodeAiffcIma4ToWav(data) {
+        if (!data || data.length < 12) return null;
+        // Verify FORM/AIFC signature
+        if (data[0] !== 0x46 || data[1] !== 0x4F || data[2] !== 0x52 || data[3] !== 0x4D) return null;
+        if (data[8] !== 0x41 || data[9] !== 0x49 || data[10] !== 0x46 || data[11] !== 0x43) return null;
+
+        const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        let channels = 2, numPackets = 0, sampleRate = 44100;
+        let ssndStart = 0;
+        let pos = 12;
+
+        while (pos + 8 <= data.length) {
+            const id = String.fromCharCode(data[pos], data[pos+1], data[pos+2], data[pos+3]);
+            const chunkSize = v.getUint32(pos + 4, false);
+            if (id === 'COMM') {
+                channels   = v.getUint16(pos + 8, false);
+                numPackets = v.getUint32(pos + 10, false);
+                // 80-bit IEEE extended big-endian sample rate at pos+16
+                const exp  = (v.getUint16(pos + 16, false) & 0x7FFF) - 16383;
+                const mant = v.getUint32(pos + 18, false); // top 32 bits of 64-bit mantissa
+                sampleRate = Math.round(mant * Math.pow(2, exp - 31));
+            } else if (id === 'SSND') {
+                const ssndOffset = v.getUint32(pos + 8, false);  // bytes to skip after 8-byte fields
+                ssndStart = pos + 16 + ssndOffset;               // skip ID(4)+size(4)+offset(4)+blockSize(4)+padding
+            }
+            pos += 8 + chunkSize + (chunkSize & 1); // word-align
+        }
+        if (!numPackets || !ssndStart) return null;
+
+        const STEP_TABLE = [
+            7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,
+            66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,
+            371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,
+            1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,
+            6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,
+            20350,22385,24623,27086,29794,32767
+        ];
+        const INDEX_TABLE = [-1,-1,-1,-1,2,4,6,8];
+
+        const PACKET_BYTES    = 34; // header(2) + data(32) per channel per packet
+        const SAMPLES_PER_PKT = 64; // 32 bytes × 2 nibbles = 64 samples
+        const totalSamples    = numPackets * SAMPLES_PER_PKT;
+        const pcm = new Int16Array(totalSamples * channels);
+
+        const predictors  = new Int32Array(channels);
+        const stepIndices = new Int32Array(channels);
+        let outIdx = 0;
+
+        for (let p = 0; p < numPackets; p++) {
+            // Read per-channel headers (interleaved: ch0_pkt, ch1_pkt, ...)
+            for (let ch = 0; ch < channels; ch++) {
+                const hdrPos = ssndStart + (p * channels + ch) * PACKET_BYTES;
+                if (hdrPos + 2 > data.length) break;
+                const hdr = v.getInt16(hdrPos, false);       // big-endian signed
+                predictors[ch]  = hdr & ~0x7F;               // signed, low 7 bits cleared
+                stepIndices[ch] = Math.max(0, Math.min(88, hdr & 0x7F));
+            }
+
+            // Decode 64 samples per channel, output interleaved [L0,R0,L1,R1,...]
+            for (let s = 0; s < SAMPLES_PER_PKT && outIdx < pcm.length; s++) {
+                for (let ch = 0; ch < channels; ch++) {
+                    const dataBase = ssndStart + (p * channels + ch) * PACKET_BYTES + 2;
+                    const byteIdx  = s >> 1;
+                    const b        = data[dataBase + byteIdx];
+                    const nibble   = (s & 1) ? (b >> 4) : (b & 0xF); // low nibble first
+
+                    const step = STEP_TABLE[stepIndices[ch]];
+                    let diff   = step >> 3;
+                    if (nibble & 1) diff += step >> 2;
+                    if (nibble & 2) diff += step >> 1;
+                    if (nibble & 4) diff += step;
+                    if (nibble & 8) diff = -diff;
+
+                    predictors[ch]  = Math.max(-32768, Math.min(32767, predictors[ch] + diff));
+                    stepIndices[ch] = Math.max(0, Math.min(88, stepIndices[ch] + INDEX_TABLE[nibble & 7]));
+                    pcm[outIdx + s * channels + ch] = predictors[ch];
+                }
+            }
+            outIdx += SAMPLES_PER_PKT * channels;
+        }
+
+        return buildPcmWav(pcm.buffer, sampleRate, channels, 16);
+    }
+
     function ensurePlayableWav(data) {
         if (!isWavData(data)) {
             // Raw PCM fallback
@@ -3996,6 +4094,165 @@ self.onmessage = async function(e) {
             hideLoading();
             console.error(err);
             toast('Demo download failed: ' + err.message, 'error');
+        }
+    }
+
+    // ---- StuffIt 5 (.sit) processing ----
+    async function processSitFile(file) {
+        showLoading('Reading SIT archive...', 0);
+
+        try {
+            const data = new Uint8Array(await file.arrayBuffer());
+
+            if (!SITExtract.isSitFile(data)) {
+                hideLoading();
+                toast('Not a valid StuffIt archive.', 'error');
+                return;
+            }
+
+            state.sourceFiles.set(file.name, { data: file, filetype: 'StuffIt Archive' });
+
+            showLoading('Parsing StuffIt archive...', -1);
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const allEntries = SITExtract.listFiles(data);
+
+            const GAME_EXTS  = new Set(['lod', 'snd', 'vid']);
+            const MAP_EXTS   = new Set(['h3m', 'h3c']);
+
+            const gameTargets  = allEntries.filter(e => GAME_EXTS.has(e.name.split('.').pop().toLowerCase()));
+            const mapEntries   = allEntries.filter(e => MAP_EXTS.has(e.name.split('.').pop().toLowerCase()));
+            const musicEntries = allEntries.filter(e => /\/music\//i.test('/' + e.path + '/'));
+            const toastEntries = allEntries.filter(e => e.name.toLowerCase().endsWith('.toast'));
+
+            if (gameTargets.length === 0 && toastEntries.length === 0) {
+                hideLoading();
+                toast('No HoMM3 game files found in StuffIt archive.', 'error');
+                return;
+            }
+
+            let extracted = 0;
+            const total = gameTargets.length;
+
+            // 1. Extract LOD/SND/VID archives eagerly
+            for (const entry of gameTargets) {
+                showLoading(`Extracting ${entry.name}...`, extracted / Math.max(total, 1));
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                try {
+                    const fileData = SITExtract.extractFile(data, entry);
+                    await registerGameFile(entry.name, fileData, 'SIT');
+                } catch (err) {
+                    toast(`Skipped ${entry.name}: ${err.message}`, 'error');
+                }
+                extracted++;
+            }
+
+            // 2. Music folder — lazy AIFF-C → WAV conversion
+            if (musicEntries.length > 0) {
+                const musicLazy = musicEntries.map(entry => ({
+                    name: entry.name,
+                    extract: async () => {
+                        const raw = SITExtract.extractFile(data, entry);
+                        return decodeAiffcIma4ToWav(raw) || raw;
+                    }
+                }));
+                state.archives.set('Music (SIT)', {
+                    archive: createMp3Archive(musicLazy),
+                    type: 'snd',
+                    data: null,
+                });
+            }
+
+            // 3. Maps folder — lazy extraction
+            if (mapEntries.length > 0) {
+                const mapsLazy = mapEntries.map(entry => ({
+                    name: entry.name,
+                    extract: async () => SITExtract.extractFile(data, entry),
+                }));
+                state.archives.set('Maps (SIT)', {
+                    archive: createMp3Archive(mapsLazy),
+                    type: 'maps',
+                    data: null,
+                });
+            }
+
+            // 4. Toast disc images — Arsenic-decompress, then treat as ISO 9660
+            for (const entry of toastEntries) {
+                const sizeMB = (entry.uncompressedSize / 1e6).toFixed(0);
+                showLoading(`Decompressing disc image ${entry.name} (${sizeMB} MB) — this may take a while...`, -1);
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                try {
+                    const toastData = SITExtract.extractFile(data, entry);
+                    const blob = new Blob([toastData]);
+
+                    if (await ISOExtract.isIsoFile(blob)) {
+                        showLoading('Scanning disc image for game files...', -1);
+                        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                        const { directGameFiles, cabSetups, directMp3Files, directMapFiles } =
+                            await ISOExtract.scanIso(blob);
+
+                        for (const gf of directGameFiles) {
+                            const basename = gf.name.replace(/;.*$/, '');
+                            const gameData = await ISOExtract.extractIsoFile(blob, gf.lba, gf.size);
+                            await registerGameFile(basename, gameData, 'SIT');
+                            extracted++;
+                        }
+
+                        const isoMp3 = directMp3Files.map(f => ({
+                            name: f.name,
+                            extract: () => ISOExtract.extractIsoFile(blob, f.lba, f.size),
+                        }));
+                        if (isoMp3.length > 0) {
+                            state.archives.set('Music (Disc)', {
+                                archive: createMp3Archive(isoMp3),
+                                type: 'mp3',
+                                data: null,
+                            });
+                        }
+
+                        const isoMaps = directMapFiles.map(f => ({
+                            name: f.name,
+                            extract: () => ISOExtract.extractIsoFile(blob, f.lba, f.size),
+                        }));
+                        if (isoMaps.length > 0) {
+                            state.archives.set('Maps (Disc)', {
+                                archive: createMp3Archive(isoMaps),
+                                type: 'maps',
+                                data: null,
+                            });
+                        }
+                    } else {
+                        toast(`${entry.name}: Mac HFS+ disc image — ISO 9660 not found, cannot extract game files.`, 'error');
+                    }
+                } catch (err) {
+                    toast(`Error processing ${entry.name}: ${err.message}`, 'error');
+                    console.error(err);
+                }
+            }
+
+            // Auto-open h3bitmap.lod if present, else first archive
+            const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('h3bitmap'));
+            if (bitmapKey) {
+                const entry = state.archives.get(bitmapKey);
+                state.archive     = entry.archive;
+                state.archiveName = bitmapKey;
+                state.archiveType = entry.type;
+            } else if (state.archives.size > 0) {
+                const [firstName, firstEntry] = state.archives.entries().next().value;
+                state.archive     = firstEntry.archive;
+                state.archiveName = firstName;
+                state.archiveType = firstEntry.type;
+            }
+
+            updateArchiveSelector();
+            buildFileList();
+            hideLoading();
+            setMode('explorer');
+            toast(`Extracted ${extracted} files from StuffIt archive!`, 'success');
+
+        } catch (err) {
+            hideLoading();
+            console.error(err);
+            toast('StuffIt extraction error: ' + err.message, 'error');
         }
     }
 
