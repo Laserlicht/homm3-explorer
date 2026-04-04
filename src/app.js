@@ -106,7 +106,7 @@
         el.className = `toast ${type}`;
         el.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${escapeHtml(message)}</span>`;
         container.appendChild(el);
-        setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(30px)'; setTimeout(() => el.remove(), 300); }, 4000);
+        setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(30px)'; setTimeout(() => el.remove(), 300); }, 12000);
     }
 
     function escapeHtml(s) {
@@ -4220,13 +4220,23 @@ self.onmessage = async function(e) {
                                 data: null,
                             });
                         }
+                    } else if (toastData[0] === 0x45 && toastData[1] === 0x52) {
+                        // Apple Driver Descriptor Record — this is an Apple HFS disc image
+                        toast(`${entry.name}: Apple HFS disc image (no ISO 9660 track found). HFS disc support is not yet implemented.`, 'error');
                     } else {
-                        toast(`${entry.name}: Mac HFS+ disc image — ISO 9660 not found, cannot extract game files.`, 'error');
+                        toast(`${entry.name}: Unknown disc image format — neither ISO 9660 nor Apple HFS.`, 'error');
                     }
                 } catch (err) {
                     toast(`Error processing ${entry.name}: ${err.message}`, 'error');
                     console.error(err);
                 }
+            }
+
+            // If nothing was extracted and no archives were created, the relevant
+            // error toasts have already been shown — just close the loading overlay.
+            if (extracted === 0 && state.archives.size === 0) {
+                hideLoading();
+                return;
             }
 
             // Auto-open h3bitmap.lod if present, else first archive
