@@ -4220,9 +4220,59 @@ self.onmessage = async function(e) {
                                 data: null,
                             });
                         }
-                    } else if (toastData[0] === 0x45 && toastData[1] === 0x52) {
-                        // Apple Driver Descriptor Record — this is an Apple HFS disc image
-                        toast(`${entry.name}: Apple HFS disc image (no ISO 9660 track found). HFS disc support is not yet implemented.`, 'error');
+                    } else if (HFSExtract.isHfsImage(toastData)) {
+                        // Apple HFS disc image
+                        showLoading(`Scanning HFS volume in ${entry.name}...`, -1);
+                        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                        const hfsFiles = HFSExtract.listFiles(toastData);
+                        if (!hfsFiles) {
+                            toast(`${entry.name}: Could not parse Apple HFS volume.`, 'error');
+                        } else {
+                            const gameExts = new Set(['lod', 'snd', 'vid', 'pac', 'pk']);
+                            const hfsMp3Files = [];
+                            const hfsMapFiles = [];
+                            for (const hf of hfsFiles) {
+                                if (hf.dfLen === 0) continue;
+                                const ext = hf.name.includes('.')
+                                    ? hf.name.slice(hf.name.lastIndexOf('.') + 1).toLowerCase()
+                                    : '';
+                                if (gameExts.has(ext)) {
+                                    showLoading(`Extracting ${hf.name} from HFS disc...`, -1);
+                                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                                    const fileData = HFSExtract.extractFile(toastData, hf);
+                                    await registerGameFile(hf.name, fileData, 'SIT');
+                                    extracted++;
+                                } else if (ext === 'mp3') {
+                                    hfsMp3Files.push(hf);
+                                } else if (ext === 'h3m' || ext === 'h3c') {
+                                    hfsMapFiles.push(hf);
+                                }
+                            }
+                            if (hfsMp3Files.length > 0) {
+                                state.archives.set('Music (HFS)', {
+                                    archive: createMp3Archive(hfsMp3Files.map(hf => ({
+                                        name: hf.name,
+                                        extract: () => Promise.resolve(HFSExtract.extractFile(toastData, hf)),
+                                    }))),
+                                    type: 'snd',
+                                    data: null,
+                                });
+                            }
+                            if (hfsMapFiles.length > 0) {
+                                state.archives.set('Maps (HFS)', {
+                                    archive: createMp3Archive(hfsMapFiles.map(hf => ({
+                                        name: hf.name,
+                                        extract: () => Promise.resolve(HFSExtract.extractFile(toastData, hf)),
+                                    }))),
+                                    type: 'maps',
+                                    data: null,
+                                });
+                            }
+                            if (extracted === 0 && hfsMp3Files.length === 0 && hfsMapFiles.length === 0) {
+                                const volName = HFSExtract.getVolumeName(toastData) || entry.name;
+                                toast(`HFS volume "${volName}": no game files found (${hfsFiles.length} files on disc).`, 'warning');
+                            }
+                        }
                     } else {
                         toast(`${entry.name}: Unknown disc image format — neither ISO 9660 nor Apple HFS.`, 'error');
                     }
