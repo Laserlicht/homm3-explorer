@@ -4005,9 +4005,14 @@ self.onmessage = async function(e) {
         try {
             const exeData = new Uint8Array(await file.arrayBuffer());
 
+            if (typeof ISExtract !== 'undefined' && ISExtract.isInstallShieldExe(exeData)) {
+                await processIsInstaller(exeData, file.name);
+                return;
+            }
+
             if (!InnoExtract.isHeroes3Installer(exeData)) {
                 hideLoading();
-                toast('Not a HoMM3 GOG installer.', 'error');
+                toast('Not a recognized HoMM3 installer.', 'error');
                 return;
             }
 
@@ -4146,6 +4151,109 @@ self.onmessage = async function(e) {
             console.error(err);
             toast('Extraction error: ' + err.message, 'error');
         }
+    }
+
+    async function processIsInstaller(exeData, filename) {
+        state.sourceFiles.set(filename, { data: exeData, filetype: 'EXE Installer' });
+        showLoading('Decompressing installer cabinet…', -1);
+        // Yield so the loading indicator paints before the synchronous heavy work.
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        let hdrInfo, cabData;
+        try {
+            ({ hdrInfo, cabData } = ISExtract.processExe(exeData));
+        } catch (err) {
+            hideLoading();
+            toast('Failed to extract installer: ' + err.message, 'error');
+            return;
+        }
+
+        const TARGET_EXTS = ISExtract.TARGET_EXTS;
+        const targetFiles = hdrInfo.files.filter(f =>
+            !(f.flags & 8) && f.dataOffset > 0 &&
+            TARGET_EXTS.some(ext => f.name.toLowerCase().endsWith(ext))
+        );
+
+        if (targetFiles.length === 0) {
+            hideLoading();
+            toast('No game files found in InstallShield installer.', 'error');
+            return;
+        }
+
+        let extracted = 0;
+        const isMp3Files  = [];
+        const isMapFiles  = [];
+
+        for (const fd of targetFiles) {
+            const name = fd.name;
+            const ext  = name.split('.').pop().toLowerCase();
+            showLoading(`Extracting ${name}…`, 0.5 + extracted / targetFiles.length * 0.5);
+            // Yield between files so the UI can breathe
+            await new Promise(r => setTimeout(r, 0));
+
+            if (ext === 'mp3') {
+                const _fd = fd;
+                isMp3Files.push({ name, extract: async () => ISExtract.extractFile(cabData, _fd) });
+                extracted++;
+                continue;
+            }
+            if (ext === 'h3m' || ext === 'h3c') {
+                const _fd = fd;
+                isMapFiles.push({ name, extract: async () => ISExtract.extractFile(cabData, _fd) });
+                extracted++;
+                continue;
+            }
+
+            const data = ISExtract.extractFile(cabData, fd);
+            if (!data || data.length === 0) { extracted++; continue; }
+
+            showLoading(`Parsing ${name}…`, 0.5 + extracted / targetFiles.length * 0.5);
+            const displayName = name + ' (Demo)';
+
+            if (ext === 'lod') {
+                const archive = await H3.LodFile.open(data);
+                state.archives.set(displayName, { archive, type: 'lod', data });
+                state.sourceFiles.set(displayName, { data, filetype: 'LOD (Demo)' });
+            } else if (ext === 'snd') {
+                const archive = await H3.SndFile.open(data);
+                state.archives.set(displayName, { archive, type: 'snd', data });
+                state.sourceFiles.set(displayName, { data, filetype: 'SND (Demo)' });
+            } else if (ext === 'vid') {
+                const archive = await H3.VidFile.open(data);
+                state.archives.set(displayName, { archive, type: 'vid', data });
+                state.sourceFiles.set(displayName, { data, filetype: 'VID (Demo)' });
+            } else {
+                state.standaloneFiles.set(displayName, { data, type: ext });
+            }
+            extracted++;
+        }
+
+        if (isMp3Files.length > 0) {
+            state.archives.set('MP3 (Demo)', { archive: createMp3Archive(isMp3Files), type: 'mp3', data: null });
+        }
+        if (isMapFiles.length > 0) {
+            state.archives.set('Maps (Demo)', { archive: createMp3Archive(isMapFiles), type: 'maps', data: null });
+        }
+
+        // Auto-open the bitmap LOD if present, otherwise the first archive
+        const bitmapKey = [...state.archives.keys()].find(k => k.toLowerCase().includes('bitmap'));
+        if (bitmapKey) {
+            const entry = state.archives.get(bitmapKey);
+            state.archive = entry.archive;
+            state.archiveName = bitmapKey;
+            state.archiveType = 'lod';
+        } else if (state.archives.size > 0) {
+            const [firstName, firstEntry] = state.archives.entries().next().value;
+            state.archive = firstEntry.archive;
+            state.archiveName = firstName;
+            state.archiveType = firstEntry.type;
+        }
+
+        updateArchiveSelector();
+        buildFileList();
+        hideLoading();
+        setMode('explorer');
+        toast(`Extracted ${extracted} files from InstallShield installer!`, 'success');
     }
 
     function askForBinFile(exeName) {
