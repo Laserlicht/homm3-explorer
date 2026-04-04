@@ -786,18 +786,19 @@ body {
     color: var(--text-primary);
 }
 
-/* Frame counter inline in animation viewer title */
-.def-title-frame {
-    font-size: 12px;
-    font-weight: 400;
+/* Frame counter in the controls bar */
+.def-frame-badge {
+    font-size: 11px;
     font-family: var(--font-mono);
     color: var(--text-muted);
-    margin-left: 8px;
+    padding: 0 4px;
+    white-space: nowrap;
 }
 
 /* Mobile collapse toggles — hidden on desktop, shown via media query */
 .preview-toolbar-toggle,
-.def-mobile-toggle {
+.def-mobile-toggle,
+.def-controls .def-mobile-toggle {
     display: none;
     align-items: center;
     justify-content: center;
@@ -1046,6 +1047,7 @@ body {
 }
 
 .def-info-header {
+    display: none;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-secondary);
@@ -1531,7 +1533,8 @@ body {
 @media (max-width: 768px) {
     /* Show mobile toggle buttons */
     .preview-toolbar-toggle { display: flex; }
-    .def-mobile-toggle { display: flex; }
+    .def-mobile-toggle,
+    .def-controls .def-mobile-toggle { display: flex; }
 
     /* Preview header: hide toolbar & meta by default */
     .preview-toolbar { display: none !important; }
@@ -1539,8 +1542,7 @@ body {
     .preview-header.toolbar-expanded .preview-toolbar { display: flex !important; width: 100%; order: 10; flex-wrap: wrap; }
     .preview-header.toolbar-expanded .preview-meta   { display: flex; width: 100%; order: 9; }
 
-    /* Animation viewer: hide info header by default */
-    .def-info-header { display: none; }
+    /* Animation viewer: show info header when expanded */
     .def-info-panel.mobile-expanded .def-info-header { display: block; }
 
     /* Animation controls: hide extra items by default, show when expanded */

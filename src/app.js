@@ -3270,7 +3270,7 @@ self.onmessage = async function(e) {
         main.innerHTML = `
             <div class="def-info-panel">
                 <div class="def-info-header">
-                    <h3>${escapeHtml(filename)}<span class="def-title-frame" id="def-frame-info"></span></h3>
+                    <h3>${escapeHtml(filename)}</h3>
                     <div class="def-info-grid">
                         <div class="def-info-item">
                             <span class="def-info-label">Type</span>
@@ -3299,6 +3299,7 @@ self.onmessage = async function(e) {
                         <button id="def-play" title="Play/Pause">▶</button>
                         <button id="def-prev" title="Previous Frame">⏮</button>
                         <button id="def-next" title="Next Frame">⏭</button>
+                        <span class="def-frame-badge" id="def-frame-info"></span>
 
                         <div class="speed-control">
                             <label>Speed</label>
