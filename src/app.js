@@ -2731,16 +2731,12 @@ self.onmessage = async function(e) {
         // Render minimaps
         let minimapHtml = '';
         if (map.terrain) {
-            const scale = Math.max(1, Math.min(4, Math.ceil(256 / map.mapSize)));
             for (let z = 0; z < levels; z++) {
-                const canvas = H3Map.renderMinimap(map, z, scale);
-                if (canvas) {
-                    const label = z === 0 ? 'Surface' : 'Underground';
-                    minimapHtml += `<div class="minimap-container">
-                        <div class="minimap-label">${label}</div>
-                        <canvas class="minimap-canvas" data-level="${z}" width="${canvas.width}" height="${canvas.height}"></canvas>
-                    </div>`;
-                }
+                const label = z === 0 ? 'Surface' : 'Underground';
+                minimapHtml += `<div class="minimap-container">
+                    <div class="minimap-label">${label}</div>
+                    <canvas class="minimap-canvas" data-level="${z}" width="${map.mapSize}" height="${map.mapSize}" style="width:256px;height:256px;image-rendering:pixelated;image-rendering:crisp-edges"></canvas>
+                </div>`;
             }
         }
 
@@ -2827,7 +2823,102 @@ self.onmessage = async function(e) {
             townPlayerHtml = `<div class="map-section"><h3 class="map-section-title">Towns per Player</h3>${renderBarChart(entries)}</div>`;
         }
 
-        // Rumors
+        // Mine type chart
+        let mineChartHtml = '';
+        if (map.stats?.minesByType && Object.keys(map.stats.minesByType).length > 0) {
+            const mineColors = { Wood: '#7ec850', Mercury: '#c06030', Ore: '#888', Sulfur: '#e8d040', Crystal: '#40c0e0', Gems: '#a060e8', Gold: '#e6b422' };
+            const entries = Object.entries(map.stats.minesByType)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: mineColors[name] || '#aaa' }));
+            mineChartHtml = `<div class="map-section"><h3 class="map-section-title">Mines by Resource</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Town faction chart
+        let factionChartHtml = '';
+        if (map.stats?.townsByFaction && Object.keys(map.stats.townsByFaction).length > 0) {
+            const factionColors = { Castle: '#e0d090', Rampart: '#70c070', Tower: '#80c0d0', Inferno: '#e06030', Necropolis: '#9090c0', Dungeon: '#8050a0', Stronghold: '#c08050', Fortress: '#60a060', Conflux: '#80d0d0', Cove: '#4090c0', Factory: '#c0c060', Random: '#aaa' };
+            const entries = Object.entries(map.stats.townsByFaction)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: factionColors[name] || '#aaa' }));
+            factionChartHtml = `<div class="map-section"><h3 class="map-section-title">Town Factions</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Monster level chart
+        let monsterChartHtml = '';
+        if (map.stats?.monstersByLevel && Object.keys(map.stats.monstersByLevel).length > 0) {
+            const lvlColors = { Specific: '#8b949e', 'Any Level': '#58a6ff', 'Level 1': '#3fb950', 'Level 2': '#7ee787', 'Level 3': '#e6b422', 'Level 4': '#f0883e', 'Level 5': '#f85149', 'Level 6': '#d2a8ff', 'Level 7': '#ff7b72' };
+            const entries = Object.entries(map.stats.monstersByLevel)
+                .map(([name, count]) => ({ label: name, value: count, color: lvlColors[name] || '#aaa' }));
+            monsterChartHtml = `<div class="map-section"><h3 class="map-section-title">Monsters by Level</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Artifact type chart
+        let artifactChartHtml = '';
+        if (map.stats?.artifactsByType && Object.keys(map.stats.artifactsByType).length > 0) {
+            const artColors = { Specific: '#8b949e', 'Random (any)': '#58a6ff', Treasure: '#3fb950', Minor: '#e6b422', Major: '#f0883e', Relic: '#d2a8ff', 'Spell Scroll': '#79c0ff' };
+            const entries = Object.entries(map.stats.artifactsByType)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: artColors[name] || '#aaa' }));
+            artifactChartHtml = `<div class="map-section"><h3 class="map-section-title">Artifacts by Type</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Resources on map
+        let resourcesHtml = '';
+        if (map.stats?.resourcesOnMap && Object.keys(map.stats.resourcesOnMap).length > 0) {
+            const resColors = { Wood: '#7ec850', Mercury: '#c06030', Ore: '#888', Sulfur: '#e8d040', Crystal: '#40c0e0', Gems: '#a060e8', Gold: '#e6b422', Random: '#aaa' };
+            const entries = Object.entries(map.stats.resourcesOnMap)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: resColors[name] || '#aaa' }));
+            resourcesHtml = `<div class="map-section"><h3 class="map-section-title">Resources on Map</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Key locations
+        const klLabels = { seerHuts: 'Seer Huts', questGuards: 'Quest Guards', witchHuts: 'Witch Huts', scholars: 'Scholars', garrisons: 'Garrisons', pandorasBoxes: "Pandora's Boxes", events: 'Events', creatureBanks: 'Creature Banks', dwellings: 'Dwellings', shrines: 'Shrines' };
+        let keyLocationsHtml = '';
+        if (map.stats?.keyLocations) {
+            const kl = map.stats.keyLocations;
+            const items = Object.entries(klLabels)
+                .map(([key, label]) => ({ label, value: kl[key] || 0 }))
+                .filter(item => item.value > 0);
+            if (items.length > 0) {
+                keyLocationsHtml = `<div class="map-section"><h3 class="map-section-title">Key Locations</h3><div class="map-key-locations">${items.map(item => `<div class="map-kl-badge"><span class="map-kl-count">${item.value}</span><span class="map-kl-label">${escapeHtml(item.label)}</span></div>`).join('')}</div></div>`;
+            }
+        }
+
+        // Top object types
+        let topObjectsHtml = '';
+        if (map.stats?.topObjectTypes?.length > 0) {
+            topObjectsHtml = `<div class="map-section"><h3 class="map-section-title">Top Object Types</h3><div class="map-top-objects">${map.stats.topObjectTypes.map(([name, count]) => `<div class="map-top-obj-row"><span class="map-top-obj-name">${escapeHtml(name)}</span><span class="map-top-obj-count">${count}</span></div>`).join('')}</div></div>`;
+        }
+
+        // Heroes per player
+        let heroesPlayerHtml = '';
+        if (map.stats?.heroesPerPlayer && Object.keys(map.stats.heroesPerPlayer).length > 0) {
+            const entries = Object.entries(map.stats.heroesPerPlayer)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: playerColorCSS(name) }));
+            heroesPlayerHtml = `<div class="map-section"><h3 class="map-section-title">Heroes per Player</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Extended key locations
+        let extKeyLocationsHtml = '';
+        if (map.stats?.extKeyLocations && Object.keys(map.stats.extKeyLocations).length > 0) {
+            const items = Object.entries(map.stats.extKeyLocations).sort((a, b) => b[1] - a[1]);
+            extKeyLocationsHtml = `<div class="map-section"><h3 class="map-section-title">Special Locations</h3><div class="map-key-locations">${items.map(([label, value]) => `<div class="map-kl-badge"><span class="map-kl-count">${value}</span><span class="map-kl-label">${escapeHtml(label)}</span></div>`).join('')}</div></div>`;
+        }
+
+        // Surface vs Underground objects
+        let surfaceSplitHtml = '';
+        if (map.hasUnderground && map.stats?.objectsBySurface) {
+            const s = map.stats.objectsBySurface;
+            const entries = [
+                { label: 'Surface', value: s.surface || 0, color: '#3fb950' },
+                { label: 'Underground', value: s.underground || 0, color: '#8b6914' },
+            ];
+            surfaceSplitHtml = `<div class="map-section"><h3 class="map-section-title">Objects by Level</h3>${renderBarChart(entries)}</div>`;
+        }
+
+
         let rumorsHtml = '';
         if (map.rumors?.length > 0) {
             rumorsHtml = `<div class="map-section"><h3 class="map-section-title">Rumors (${map.rumors.length})</h3>
@@ -2883,10 +2974,10 @@ self.onmessage = async function(e) {
                             <div class="map-meta-item"><span class="map-meta-label">Size</span><span class="map-meta-value">${sizeLabel}${ugLabel}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">Difficulty</span><span class="map-meta-value">${escapeHtml(map.difficultyName)}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">Players</span><span class="map-meta-value">${map.playerCount}</span></div>
-                            <div class="map-meta-item"><span class="map-meta-label">Objects</span><span class="map-meta-value">${map.objects?.length || 0}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Objects</span><span class="map-meta-value">${map.stats?.objectCount ?? map.objects?.length ?? 0}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">File Size</span><span class="map-meta-value">${formatSize(rawData?.length || 0)}</span></div>
                             ${map.levelLimit ? `<div class="map-meta-item"><span class="map-meta-label">Level Limit</span><span class="map-meta-value">${map.levelLimit === 0 ? 'None' : map.levelLimit}</span></div>` : ''}
-                            ${map.stats?.objectCount ? `<div class="map-meta-item"><span class="map-meta-label">Total Objects</span><span class="map-meta-value">${map.stats.objectCount}</span></div>` : ''}
+                            ${map.stats?.objectDensity != null ? `<div class="map-meta-item"><span class="map-meta-label">Obj. Density</span><span class="map-meta-value">${map.stats.objectDensity.toFixed(1)}/100 tiles</span></div>` : ''}
                         </div>
                         ${map.description ? `<p class="map-preview-desc">${escapeHtml(map.description)}</p>` : ''}
                         ${conditionsHtml}
@@ -2895,6 +2986,16 @@ self.onmessage = async function(e) {
                         ${terrainChartHtml}
                         ${objectStatsHtml}
                         ${townPlayerHtml}
+                        ${heroesPlayerHtml}
+                        ${surfaceSplitHtml}
+                        ${mineChartHtml}
+                        ${factionChartHtml}
+                        ${monsterChartHtml}
+                        ${artifactChartHtml}
+                        ${resourcesHtml}
+                        ${keyLocationsHtml}
+                        ${extKeyLocationsHtml}
+                        ${topObjectsHtml}
                         ${rumorsHtml}
                         ${eventsHtml}
                     </div>
@@ -2904,9 +3005,8 @@ self.onmessage = async function(e) {
 
         // Render minimap canvases
         if (map.terrain) {
-            const scale = Math.max(1, Math.min(4, Math.ceil(256 / map.mapSize)));
             for (let z = 0; z < levels; z++) {
-                const canvas = H3Map.renderMinimap(map, z, scale);
+                const canvas = H3Map.renderMinimap(map, z, 256);
                 if (canvas) {
                     const target = container.querySelector(`.minimap-canvas[data-level="${z}"]`);
                     if (target) {
@@ -2926,6 +3026,35 @@ self.onmessage = async function(e) {
     }
 
     function showH3CPreview(container, campaign, filename, rawData) {
+        // Aggregate stats from all parsed maps
+        let totalArea = 0, totalObjects = 0, totalTowns = 0, totalMonsters = 0;
+        const allFactions = {};
+        if (campaign.maps) {
+            for (const m of campaign.maps) {
+                if (!m || m.parseError) continue;
+                totalArea += (m.mapSize || 0) * (m.mapSize || 0) * (m.hasUnderground ? 2 : 1);
+                totalObjects += m.stats?.objectCount ?? (m.objects?.length || 0);
+                totalTowns += m.stats?.towns?.length || 0;
+                totalMonsters += m.stats?.monsters?.length || 0;
+                if (m.stats?.townsByFaction) {
+                    for (const [f, c] of Object.entries(m.stats.townsByFaction)) allFactions[f] = (allFactions[f] || 0) + c;
+                }
+            }
+        }
+        const aggHtml = `
+            <div class="map-meta-item"><span class="map-meta-label">Total Area</span><span class="map-meta-value">${totalArea.toLocaleString()} tiles</span></div>
+            <div class="map-meta-item"><span class="map-meta-label">Total Objects</span><span class="map-meta-value">${totalObjects.toLocaleString()}</span></div>
+            <div class="map-meta-item"><span class="map-meta-label">Total Towns</span><span class="map-meta-value">${totalTowns}</span></div>
+            <div class="map-meta-item"><span class="map-meta-label">Total Monsters</span><span class="map-meta-value">${totalMonsters}</span></div>`;
+
+        // Faction summary
+        let factionSummaryHtml = '';
+        if (Object.keys(allFactions).length > 0) {
+            const factionColors = { Castle: '#e0d090', Rampart: '#70c070', Tower: '#80c0d0', Inferno: '#e06030', Necropolis: '#9090c0', Dungeon: '#8050a0', Stronghold: '#c08050', Fortress: '#60a060', Conflux: '#80d0d0', Cove: '#4090c0', Factory: '#c0c060', Random: '#aaa' };
+            const entries = Object.entries(allFactions).sort((a,b)=>b[1]-a[1]).map(([n,c]) => ({ label: n, value: c, color: factionColors[n] || '#aaa' }));
+            factionSummaryHtml = `<div class="map-section"><h3 class="map-section-title">Town Factions (Campaign Total)</h3>${renderBarChart(entries)}</div>`;
+        }
+
         // Scenario cards
         let scenarioHtml = '';
         if (campaign.scenarios?.length > 0) {
@@ -2942,12 +3071,20 @@ self.onmessage = async function(e) {
                 // Minimap for embedded map
                 let minimapTag = '';
                 if (mapData?.terrain) {
-                    const scale = Math.max(1, Math.min(3, Math.ceil(128 / mapData.mapSize)));
-                    minimapTag = `<canvas class="h3c-minimap-canvas" data-scenario="${i}" width="${mapData.mapSize * scale}" height="${mapData.mapSize * scale}"></canvas>`;
+                    minimapTag = `<canvas class="h3c-minimap-canvas" data-scenario="${i}" width="${mapData.mapSize}" height="${mapData.mapSize}" style="width:120px;height:120px;image-rendering:pixelated;image-rendering:crisp-edges"></canvas>`;
                 }
 
                 const precondBits = typeof sc.preconditions === 'number' ? sc.preconditions : 0;
-                const precondText = precondBits > 0 ? `After: ${Array.from({length: 16}, (_, b) => (precondBits & (1 << b)) ? '#' + (b+1) : null).filter(Boolean).join(', ')}` : 'Available from start';
+                const precondText = precondBits > 0
+                    ? Array.from({length: 16}, (_, b) => (precondBits & (1 << b)) ? `<span class="h3c-precond-badge">${b+1}</span>` : null).filter(Boolean).join(' ')
+                    : '<span class="h3c-precond-start">Start</span>';
+
+                const bonusHtml = sc.bonuses?.length
+                    ? `<div class="h3c-bonus-list">${sc.bonuses.map(b => `<span class="h3c-bonus-badge">${escapeHtml(b.type || 'Bonus')}</span>`).join('')}</div>`
+                    : '';
+                const vcHtml = mapData?.victoryCondition ? `<div class="h3c-vc">🏆 ${escapeHtml(mapData.victoryCondition.name)}</div>` : '';
+                const lcHtml = mapData?.lossCondition ? `<div class="h3c-lc">💀 ${escapeHtml(mapData.lossCondition.name)}</div>` : '';
+                const townFactions = mapData?.stats?.townsByFaction ? Object.entries(mapData.stats.townsByFaction).sort((a,b)=>b[1]-a[1]).map(([f,c]) => `${escapeHtml(f)}:${c}`).join(', ') : '';
 
                 scenarioHtml += `<div class="h3c-scenario-card" data-scenario="${i}">
                     <div class="h3c-scenario-header">
@@ -2961,7 +3098,10 @@ self.onmessage = async function(e) {
                             ${mapSizeLabel ? `<div>${mapSizeLabel}${hasUg}</div>` : ''}
                             ${diffName ? `<div>Difficulty: ${escapeHtml(diffName)}</div>` : ''}
                             <div>Players: ${playerCount}</div>
-                            <div class="h3c-precond">${escapeHtml(precondText)}</div>
+                            ${townFactions ? `<div class="h3c-factions">${townFactions}</div>` : ''}
+                            ${vcHtml}${lcHtml}
+                            <div class="h3c-precond">${precondText}</div>
+                            ${bonusHtml}
                         </div>
                     </div>
                     ${sc.regionText ? `<div class="h3c-scenario-region">${escapeHtml(sc.regionText)}</div>` : ''}
@@ -3002,8 +3142,10 @@ self.onmessage = async function(e) {
                             <div class="map-meta-item"><span class="map-meta-label">Scenarios</span><span class="map-meta-value">${campaign.scenarioCount}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">Maps</span><span class="map-meta-value">${campaign.mapCount}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">File Size</span><span class="map-meta-value">${formatSize(rawData?.length || 0)}</span></div>
+                            ${aggHtml}
                         </div>
                         ${campaign.description ? `<p class="map-preview-desc">${escapeHtml(campaign.description)}</p>` : ''}
+                        ${factionSummaryHtml}
                         ${scenarioHtml}
                     </div>
                 </div>
@@ -3015,8 +3157,7 @@ self.onmessage = async function(e) {
             for (let i = 0; i < campaign.maps.length; i++) {
                 const mapData = campaign.maps[i];
                 if (mapData && mapData.terrain) {
-                    const scale = Math.max(1, Math.min(3, Math.ceil(128 / mapData.mapSize)));
-                    const canvas = H3Map.renderMinimap(mapData, 0, scale);
+                    const canvas = H3Map.renderMinimap(mapData, 0, 120);
                     if (canvas) {
                         const target = container.querySelector(`.h3c-minimap-canvas[data-scenario="${i}"]`);
                         if (target) target.getContext('2d').drawImage(canvas, 0, 0);

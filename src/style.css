@@ -2101,3 +2101,91 @@ canvas.img-border {
     color: var(--text-muted);
     line-height: 1.5;
 }
+
+/* ── Key Locations Grid ─────────────────────────────────────────── */
+.map-key-locations {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 0;
+}
+.map-kl-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: var(--surface-alt, #1c2026);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    min-width: 72px;
+    text-align: center;
+}
+.map-kl-count {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--accent, #58a6ff);
+    line-height: 1.2;
+}
+.map-kl-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    white-space: nowrap;
+}
+
+/* ── Top Object Types ───────────────────────────────────────────── */
+.map-top-objects {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.map-top-obj-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: var(--surface-alt, #1c2026);
+}
+.map-top-obj-name { color: var(--text-secondary); }
+.map-top-obj-count { color: var(--accent, #58a6ff); font-weight: 600; }
+
+/* ── H3C Scenario enhancements ──────────────────────────────────── */
+.h3c-precond-badge {
+    display: inline-block;
+    background: var(--accent-soft, #1f3a5a);
+    color: var(--accent, #58a6ff);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 1px;
+}
+.h3c-precond-start {
+    display: inline-block;
+    background: #1a4a2a;
+    color: #3fb950;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.h3c-bonus-list {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.h3c-bonus-badge {
+    display: inline-block;
+    background: #2a2a1a;
+    color: #e6b422;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 11px;
+}
+.h3c-vc { color: #3fb950; font-size: 12px; }
+.h3c-lc { color: #f85149; font-size: 12px; }
+.h3c-factions { color: var(--text-muted); font-size: 11px; }
+

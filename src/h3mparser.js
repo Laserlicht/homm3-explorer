@@ -289,24 +289,74 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     // Decompress gzip data (H3M files are gzip-compressed)
     // ----------------------------------------------------------------
+    // Parse the gzip header and return the byte offset where the deflate stream starts.
+    // Handles optional FEXTRA, FNAME, FCOMMENT, FHCRC fields per RFC 1952.
+    function gzipDeflateOffset(u8) {
+        if (u8[0] !== 0x1f || u8[1] !== 0x8b) return -1;
+        const flg = u8[3];
+        let offset = 10;
+        if (flg & 4) { // FEXTRA
+            if (offset + 2 > u8.length) return -1;
+            const xlen = u8[offset] | (u8[offset + 1] << 8);
+            offset += 2 + xlen;
+        }
+        if (flg & 8) { // FNAME — null-terminated string
+            while (offset < u8.length && u8[offset] !== 0) offset++;
+            offset++; // skip null terminator
+        }
+        if (flg & 16) { // FCOMMENT — null-terminated string
+            while (offset < u8.length && u8[offset] !== 0) offset++;
+            offset++;
+        }
+        if (flg & 2) { // FHCRC
+            offset += 2;
+        }
+        return offset;
+    }
+
     function decompress(data) {
         const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
         // Check for gzip magic
         if (u8[0] === 0x1f && u8[1] === 0x8b) {
             if (typeof pako !== 'undefined') {
+                // Fast path: strict gzip inflate (validates header + footer CRC)
                 try {
-                    return pako.inflate(u8);
-                } catch (e) {
-                    // Try partial decompression for truncated files
-                    try {
-                        const inflator = new pako.Inflate();
-                        inflator.push(u8, true);
-                        if (inflator.result && inflator.result.length > 0) {
-                            return inflator.result;
-                        }
-                    } catch { /* fall through */ }
-                    throw e;
+                    const result = pako.inflate(u8);
+                    if (result && result.length > 0) return result;
+                } catch (_) {
+                    // Fall through to raw inflate (tolerates corrupt gzip footer)
                 }
+                // Fallback: skip the gzip header and use inflateRaw.
+                // This tolerates files with a corrupt gzip footer (bad CRC/ISIZE) while
+                // the deflate payload itself is intact — pako.inflateRaw stops at the
+                // DEFLATE end-of-stream marker and ignores any trailing bytes.
+                if (typeof pako.inflateRaw !== 'undefined') {
+                    const offset = gzipDeflateOffset(u8);
+                    if (offset > 0 && offset < u8.length) {
+                        const sliced = u8.slice(offset);
+                        // First attempt: standard raw inflate (works for corrupt-footer gzip)
+                        try {
+                            const result = pako.inflateRaw(sliced);
+                            if (result && result.length > 0) return result;
+                        } catch (_) { /* fall through to streaming inflate */ }
+                        // Second attempt: streaming inflate with Z_SYNC_FLUSH (2).
+                        // Recovers all available output even from truncated deflate streams.
+                        if (typeof pako.Inflate !== 'undefined') {
+                            const inf = new pako.Inflate({ raw: true });
+                            try { inf.push(sliced, 2); } catch (_) { /* partial data is still in chunks */ }
+                            if (inf.chunks && inf.chunks.length > 0) {
+                                const total = inf.chunks.reduce((s, c) => s + c.length, 0);
+                                if (total > 0) {
+                                    const out = new Uint8Array(total);
+                                    let off = 0;
+                                    for (const c of inf.chunks) { out.set(c, off); off += c.length; }
+                                    return out;
+                                }
+                            }
+                        }
+                    }
+                }
+                throw new Error('Failed to decompress H3M: gzip data is corrupt or truncated');
             }
             throw new Error('No decompression library available (need pako)');
         }
@@ -317,7 +367,10 @@ const H3Map = (() => {
     async function decompressAsync(data) {
         const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
         if (u8[0] === 0x1f && u8[1] === 0x8b) {
-            if (typeof pako !== 'undefined') return pako.inflate(u8);
+            if (typeof pako !== 'undefined') {
+                // Use the synchronous decompress() which already handles corrupt footers
+                return decompress(u8);
+            }
             if (typeof DecompressionStream !== 'undefined') {
                 const ds = new DecompressionStream('gzip');
                 const writer = ds.writable.getWriter();
@@ -1250,7 +1303,7 @@ const H3Map = (() => {
             t.blockMask = r.bytes(6);
             t.visitMask = r.bytes(6);
             t.terrainMask = r.u16();
-            t.terrainMask2 = feat.isHOTA ? r.u16() : 0;
+            t.terrainMask2 = r.u16(); // always present: unused/padding in RoE/AB/SoD, extra terrain flags in HotA
             t.objClass = r.u32();
             t.objSubID = r.u32();
             t.type = r.u8();
@@ -1404,9 +1457,18 @@ const H3Map = (() => {
             // Obligatory spells
             r.skip(9);
         }
-        // Possible spells
-        if (feat.isSOD || feat.isHOTA) {
-            r.skip(9);
+        // Possible spells (always present in all versions)
+        r.skip(9);
+
+        // HotA1+: spell research allowed
+        if (feat.isHOTA && feat.hotaSub >= 1) {
+            r.bool(); // spellResearchAllowed
+        }
+
+        // HotA5+: special buildings customization table
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            const specialBuildingsSize = r.u32();
+            r.skip(specialBuildingsSize); // 1 byte per entry
         }
 
         // Town events
@@ -1431,9 +1493,35 @@ const H3Map = (() => {
         if (feat.isSOD || feat.isHOTA) r.skip(1); // humanAffected
         r.skip(1); // computerAffected
         r.u16(); // firstOccurrence
-        r.u8(); // nextOccurrence
-        r.skip(17); // padding
-        // buildings
+        r.u16(); // nextOccurrence (u16, not u8!)
+        r.skip(16); // padding (16 bytes, not 17!)
+
+        // (readEventCommon in VCMI) HotA7+: affected difficulties bitmask
+        if (feat.isHOTA && feat.hotaSub >= 7) {
+            r.i32(); // affectedDifficulties bitmask
+        }
+        // (readEventCommon in VCMI) HotA9+: event system link
+        if (feat.isHOTA && feat.hotaSub >= 9) {
+            const usesEventSystem = r.bool();
+            if (usesEventSystem) {
+                r.i32();  // eventID
+                r.bool(); // synchronizeObjects
+            }
+        }
+
+        // HotA5+: 8th creature slot growth + special buildings data
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            r.i32(); // creatureGrowth8 (8th slot)
+            r.i32(); // hotaAmount (always 44)
+            r.i32(); // hotaSpecialA (special building bitmask)
+            r.i16(); // hotaSpecialB
+        }
+        // HotA7+: neutral player affected flag
+        if (feat.isHOTA && feat.hotaSub >= 7) {
+            r.bool(); // neutralAffected
+        }
+
+        // buildings (after all HotA extras, per VCMI)
         r.skip(6);
         // creatures
         for (let i = 0; i < 7; i++) r.u16();
@@ -1510,6 +1598,13 @@ const H3Map = (() => {
         }
 
         r.skip(16); // padding
+
+        // HotA5+: alwaysAddSkills (bool) + cannotGainXP (bool) + level (i32)
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            r.bool(); // alwaysAddSkills
+            r.bool(); // cannotGainXP
+            r.i32();  // level
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1532,6 +1627,20 @@ const H3Map = (() => {
         obj.neverFlees = r.bool();
         obj.doesNotGrow = r.bool();
         r.skip(2); // padding
+
+        // HotA3+: extra monster fields
+        if (feat.isHOTA && feat.hotaSub >= 3) {
+            r.i32();  // agression (-1..10)
+            r.bool(); // joinOnlyForMoney
+            r.i32();  // joiningPercentage (100 = default)
+            r.i32();  // upgradedStackPresence (-1=random, 0=never, 1=always)
+            r.i32();  // stacksCount (-1=default)
+        }
+        // HotA5+: stack size by AI value
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            r.bool(); // sizeByValue
+            r.i32();  // targetValue
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1549,17 +1658,35 @@ const H3Map = (() => {
         if (feat.isROE) {
             const questArtifact = r.u8();
             if (questArtifact !== 0xFF) {
-                readSeerReward(r, feat, obj);
+                readSeerReward(r, feat, obj); // RoE: just reward, no quest structure
             }
+            r.skip(2); // padding
             return;
         }
 
-        // AB+
-        readQuest(r, feat, obj);
+        // AB+: HotA3+ has questsCount, otherwise 1
+        const questsCount = (feat.isHOTA && feat.hotaSub >= 3) ? r.u32() : 1;
+        for (let i = 0; i < questsCount; i++) {
+            readSeerHutQuest(r, feat, obj);
+        }
 
-        const deadline = r.u32();
-        readSeerReward(r, feat, obj);
+        if (feat.isHOTA && feat.hotaSub >= 3) {
+            const repeatableQuestsCount = r.u32();
+            for (let i = 0; i < repeatableQuestsCount; i++) {
+                readSeerHutQuest(r, feat, obj);
+            }
+        }
+
         r.skip(2); // padding
+    }
+
+    function readSeerHutQuest(r, feat, obj) {
+        // AB+: read full quest then reward
+        const missionType = readQuest(r, feat, obj);
+        if (missionType !== 0) {
+            readSeerReward(r, feat, obj);
+        }
+        r.skip(1); // zero padding after each quest/reward pair
     }
 
     function readSeerReward(r, feat, obj) {
@@ -1571,57 +1698,82 @@ const H3Map = (() => {
             case 2: obj.rewardManaPoints = r.u32(); break;
             case 3: obj.rewardMorale = r.u8(); break;
             case 4: obj.rewardLuck = r.u8(); break;
-            case 5: r.skip(1 + 4); break; // resource
-            case 6: r.skip(1 + 1); break; // primary skill
-            case 7: r.skip(1 + 1); break; // secondary skill
-            case 8: readArtifactId(r, feat); break;
+            case 5: r.skip(1); r.u32(); break; // resource type + amount
+            case 6: r.skip(1 + 1); break; // primary skill type + value
+            case 7: r.skip(1 + 1); break; // secondary skill type + level
+            case 8: // artifact
+                readArtifactId(r, feat);
+                if (feat.isHOTA && feat.hotaSub >= 5) r.u16(); // spell scroll ID
+                break;
             case 9: r.skip(1); break; // spell
             case 10: // creature
-                if (feat.isROE) { r.skip(1 + 2); }
-                else { r.skip(2 + 2); }
+                if (feat.isROE) { r.skip(1); } else { r.skip(2); } // creature ID
+                r.u16(); // amount
                 break;
         }
     }
 
     // ----------------------------------------------------------------
     // Quest
+    // Returns missionType (0 = NONE)
     // ----------------------------------------------------------------
     function readQuest(r, feat, obj) {
         const missionType = r.u8();
         switch (missionType) {
-            case 0: break;
-            case 1: r.skip(4); break; // level
-            case 2: r.skip(4 * 4); break; // primary skills
-            case 3: // defeat hero
-                r.skip(4); break;
-            case 4: // defeat monster
-                r.skip(4); break;
+            case 0: return 0; // NONE — no further data
+            case 1: r.u32(); break; // level
+            case 2: r.skip(4 * 4); break; // primary skills (4 bytes each)
+            case 3: r.u32(); break; // defeat hero — questIdentifier
+            case 4: r.u32(); break; // defeat monster — questIdentifier
             case 5: { // artifacts
                 const cnt = r.u8();
-                for (let i = 0; i < cnt; i++) readArtifactId(r, feat);
+                for (let i = 0; i < cnt; i++) {
+                    readArtifactId(r, feat);
+                    if (feat.isHOTA && feat.hotaSub >= 5) r.u16(); // spell scroll ID
+                }
                 break;
             }
             case 6: { // creatures
                 const cnt = r.u8();
                 for (let i = 0; i < cnt; i++) {
-                    if (feat.isROE) r.skip(1 + 2);
-                    else r.skip(2 + 2);
+                    if (feat.isROE) r.skip(1); else r.skip(2); // creature ID
+                    r.u16(); // amount
                 }
                 break;
             }
             case 7: { // resources
-                for (let i = 0; i < 7; i++) r.i32();
+                for (let i = 0; i < 7; i++) r.u32();
                 break;
             }
             case 8: r.skip(1); break; // hero
             case 9: r.skip(1); break; // player
+            case 10: { // HOTA_MULTI
+                const missionSubID = r.u32();
+                if (missionSubID === 0) {
+                    // HOTA_HERO_CLASS — sized bitmask
+                    const classesCount = r.u32();
+                    const classesBytes = Math.ceil(classesCount / 8);
+                    r.skip(classesBytes);
+                } else if (missionSubID === 1) {
+                    // HOTA_REACH_DATE
+                    r.u32(); // daysPassed
+                } else if (missionSubID === 2) {
+                    // HOTA_GAME_DIFFICULTY
+                    r.u32(); // difficultyMask
+                } else if (missionSubID === 3) {
+                    // HOTA_SCRIPTED
+                    r.u32(); // scriptID
+                    r.bool(); // unknown
+                }
+                break;
+            }
         }
-        if (missionType > 0) {
-            r.u32(); // limit/deadline
-            r.str(); // first visit text
-            r.str(); // next visit text
-            r.str(); // completed text
-        }
+        // After mission data: deadline + 3 strings
+        r.u32(); // lastDay / deadline
+        r.str(); // firstVisitText
+        r.str(); // nextVisitText
+        r.str(); // completedText
+        return missionType;
     }
 
     // ----------------------------------------------------------------
@@ -1696,7 +1848,7 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     // Pandora's Box
     // ----------------------------------------------------------------
-    function readPandorasBoxObject(r, feat, obj) {
+    function readPandorasBoxObject(r, feat, obj, includeHotaExtras = true) {
         const hasMessage = r.bool();
         if (hasMessage) {
             obj.message = r.str();
@@ -1731,18 +1883,54 @@ const H3Map = (() => {
             else r.skip(2 + 2);
         }
         r.skip(8); // padding
+
+        // HotA5+: unknown byte + movement mode/amount
+        if (includeHotaExtras && feat.isHOTA && feat.hotaSub >= 5) {
+            r.skip(1);  // unknown, always 0
+            r.i32();    // movementMode (Give/Take/Nullify/Set/Replenish)
+            r.i32();    // movementAmount
+        }
+        // HotA6+: allowed difficulties mask
+        if (includeHotaExtras && feat.isHOTA && feat.hotaSub >= 6) {
+            r.i32();    // allowedDifficultiesMask
+        }
+        // HotA9+: event system link
+        if (includeHotaExtras && feat.isHOTA && feat.hotaSub >= 9) {
+            const usesEventSystem = r.bool();
+            if (usesEventSystem) r.i32(); // eventID
+        }
     }
 
     // ----------------------------------------------------------------
     // Event Object
     // ----------------------------------------------------------------
     function readEventObject(r, feat, obj) {
-        // Same as Pandora's but with extra fields
-        readPandorasBoxObject(r, feat, obj);
+        // Same core box content as Pandora (without HotA extras – handled below)
+        readPandorasBoxObject(r, feat, obj, false);
         obj.eventPlayers = r.u8();
         obj.isComputerActive = r.bool();
         obj.removeAfterVisit = r.bool();
         r.skip(4); // padding
+
+        // HotA3+: humanActivate field
+        if (feat.isHOTA && feat.hotaSub >= 3) {
+            r.bool(); // humanActivate
+        }
+
+        // HotA5+: movement mode/amount
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            r.i32(); // movementMode
+            r.i32(); // movementAmount
+        }
+        // HotA6+: allowed difficulties mask
+        if (feat.isHOTA && feat.hotaSub >= 6) {
+            r.i32(); // allowedDifficultiesMask
+        }
+        // HotA9+: event system link
+        if (feat.isHOTA && feat.hotaSub >= 9) {
+            const usesEventSystem = r.bool();
+            if (usesEventSystem) r.i32(); // eventID
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1778,6 +1966,21 @@ const H3Map = (() => {
         if (obj.heroTypeId === 0xFF) {
             obj.power = r.u8();
         }
+
+        // HotA5+: customized starting units and starting artifacts
+        if (feat.isHOTA && feat.hotaSub >= 5) {
+            const customizedStartingUnits = r.bool();
+            if (customizedStartingUnits) {
+                for (let i = 0; i < 7; i++) {
+                    r.i32(); // unit amount
+                    r.i32(); // creature ID (32-bit)
+                }
+                const artifactsToGive = r.i32();
+                for (let i = 0; i < artifactsToGive; i++) {
+                    r.i32(); // artifact ID (32-bit)
+                }
+            }
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1808,8 +2011,25 @@ const H3Map = (() => {
             if (feat.isSOD || feat.isHOTA) ev.humanAffected = r.u8();
             ev.computerAffected = r.u8();
             ev.firstOccurrence = r.u16();
-            ev.nextOccurrence = r.u8();
-            r.skip(17); // padding
+            ev.nextOccurrence = r.u16(); // u16!
+            r.skip(16); // padding (16 bytes)
+
+            // HotA7+: affected difficulties bitmask
+            if (feat.isHOTA && feat.hotaSub >= 7) {
+                r.i32();
+            }
+            // HotA9+: event system link
+            if (feat.isHOTA && feat.hotaSub >= 9) {
+                const usesEventSystem = r.bool();
+                if (usesEventSystem) {
+                    r.i32();  // eventID
+                    r.bool(); // synchronizeObjects
+                }
+            }
+            // HotA5 & HotA6 only (not HotA7+): 14 garbage bytes at end of event
+            if (feat.isHOTA && feat.hotaSub >= 5 && feat.hotaSub <= 6) {
+                r.skip(14);
+            }
             events.push(ev);
         }
         return events;
@@ -1854,7 +2074,10 @@ const H3Map = (() => {
 
         // Object counts
         if (map.objects) {
-            stats.objectCount = map.objects.length;
+            const feat = map._features || {};
+            const townNames = getTownNames(feat.ver || VERSION.SOD, feat.hotaSub || 0);
+
+            stats.objectCount = map.objects.filter(o => o.objClass !== -1).length;
             stats.objectsByClass = {};
             stats.towns = [];
             stats.heroes = [];
@@ -1862,22 +2085,85 @@ const H3Map = (() => {
             stats.mines = [];
             stats.artifacts = [];
 
+            // Detailed breakdowns
+            stats.minesByType = {};
+            stats.townsByFaction = {};
+            stats.monstersByLevel = { 'Specific': 0, 'Any Level': 0, 'Level 1': 0, 'Level 2': 0, 'Level 3': 0, 'Level 4': 0, 'Level 5': 0, 'Level 6': 0, 'Level 7': 0 };
+            stats.artifactsByType = { 'Specific': 0, 'Random (any)': 0, 'Treasure': 0, 'Minor': 0, 'Major': 0, 'Relic': 0, 'Spell Scroll': 0 };
+            stats.resourcesOnMap = {};
+            stats.keyLocations = {
+                seerHuts: 0, questGuards: 0, witchHuts: 0, scholars: 0,
+                garrisons: 0, pandorasBoxes: 0, events: 0,
+                creatureBanks: 0, dwellings: 0, shrines: 0,
+            };
+
             for (const obj of map.objects) {
                 const cls = obj.objClass;
+                // Skip invalid/null objects (template index out of range)
+                if (cls === -1) continue;
                 const clsName = getObjectClassName(cls);
                 stats.objectsByClass[clsName] = (stats.objectsByClass[clsName] || 0) + 1;
 
                 if (cls === OBJ.TOWN || cls === OBJ.RANDOM_TOWN) {
                     stats.towns.push(obj);
+                    const factionName = cls === OBJ.RANDOM_TOWN ? 'Random' : (townNames[obj.objSubID] || `Town ${obj.objSubID}`);
+                    stats.townsByFaction[factionName] = (stats.townsByFaction[factionName] || 0) + 1;
                 } else if (cls === OBJ.HERO || cls === OBJ.RANDOM_HERO || cls === OBJ.PRISON) {
                     stats.heroes.push(obj);
                 } else if (isMonsterObj(cls)) {
                     stats.monsters.push(obj);
-                } else if (cls === OBJ.MINE) {
+                    if (cls === OBJ.MONSTER) stats.monstersByLevel['Specific']++;
+                    else if (cls === OBJ.RANDOM_MONSTER) stats.monstersByLevel['Any Level']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L1) stats.monstersByLevel['Level 1']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L2) stats.monstersByLevel['Level 2']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L3) stats.monstersByLevel['Level 3']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L4) stats.monstersByLevel['Level 4']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L5) stats.monstersByLevel['Level 5']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L6) stats.monstersByLevel['Level 6']++;
+                    else if (cls === OBJ.RANDOM_MONSTER_L7) stats.monstersByLevel['Level 7']++;
+                } else if (cls === OBJ.MINE || cls === OBJ.ABANDONED_MINE) {
                     stats.mines.push(obj);
+                    const resName = cls === OBJ.ABANDONED_MINE ? 'Abandoned' : (RESOURCE_NAMES[obj.objSubID] || `Type ${obj.objSubID}`);
+                    stats.minesByType[resName] = (stats.minesByType[resName] || 0) + 1;
                 } else if (isArtifactObj(cls)) {
                     stats.artifacts.push(obj);
+                    if (cls === OBJ.ARTIFACT) stats.artifactsByType['Specific']++;
+                    else if (cls === OBJ.RANDOM_ART) stats.artifactsByType['Random (any)']++;
+                    else if (cls === OBJ.RANDOM_TREASURE) stats.artifactsByType['Treasure']++;
+                    else if (cls === OBJ.RANDOM_MINOR) stats.artifactsByType['Minor']++;
+                    else if (cls === OBJ.RANDOM_MAJOR) stats.artifactsByType['Major']++;
+                    else if (cls === OBJ.RANDOM_RELIC) stats.artifactsByType['Relic']++;
+                    else if (cls === OBJ.SPELL_SCROLL) stats.artifactsByType['Spell Scroll']++;
+                } else if (cls === OBJ.RESOURCE) {
+                    const resName = RESOURCE_NAMES[obj.objSubID] || `Type ${obj.objSubID}`;
+                    stats.resourcesOnMap[resName] = (stats.resourcesOnMap[resName] || 0) + 1;
+                } else if (cls === OBJ.RANDOM_RESOURCE) {
+                    stats.resourcesOnMap['Random'] = (stats.resourcesOnMap['Random'] || 0) + 1;
                 }
+
+                // Key locations
+                if (cls === OBJ.SEER_HUT) stats.keyLocations.seerHuts++;
+                else if (cls === OBJ.QUEST_GUARD) stats.keyLocations.questGuards++;
+                else if (cls === OBJ.WITCH_HUT) stats.keyLocations.witchHuts++;
+                else if (cls === OBJ.SCHOLAR) stats.keyLocations.scholars++;
+                else if (cls === OBJ.GARRISON || cls === OBJ.GARRISON2) stats.keyLocations.garrisons++;
+                else if (cls === OBJ.PANDORAS_BOX) stats.keyLocations.pandorasBoxes++;
+                else if (cls === OBJ.EVENT) stats.keyLocations.events++;
+                else if (cls === OBJ.CREATURE_BANK) stats.keyLocations.creatureBanks++;
+                else if (cls === OBJ.DWELLING || cls === OBJ.DWELLING_FACTION ||
+                         cls === OBJ.RANDOM_DWELLING || cls === OBJ.RANDOM_DWELLING_L || cls === OBJ.RANDOM_DWELLING_LVL) {
+                    stats.keyLocations.dwellings++;
+                }
+                // Shrines (class 88)
+                else if (cls === 88) stats.keyLocations.shrines++;
+            }
+
+            // Remove zero entries from monster levels
+            for (const k of Object.keys(stats.monstersByLevel)) {
+                if (stats.monstersByLevel[k] === 0) delete stats.monstersByLevel[k];
+            }
+            for (const k of Object.keys(stats.artifactsByType)) {
+                if (stats.artifactsByType[k] === 0) delete stats.artifactsByType[k];
             }
 
             // Towns per player
@@ -1893,6 +2179,38 @@ const H3Map = (() => {
                 const owner = h.owner !== undefined && h.owner < 8 ? PLAYER_COLOR_NAMES[h.owner] : 'Neutral';
                 stats.heroesPerPlayer[owner] = (stats.heroesPerPlayer[owner] || 0) + 1;
             }
+
+            // Extended key locations — derived from objectsByClass (name-based)
+            const EXT_KL_NAMES = [
+                'Lighthouse', 'Shipyard', 'University', 'Tree of Knowledge',
+                'Altar of Sacrifice', 'Learning Stone', 'Arena', 'Stables',
+                'Subterranean Gate', 'Cartographer', 'Trading Post',
+                'Magic Well', 'Magic Spring', 'Obelisk', 'Hill Fort',
+                'Redwood Observatory', 'Pillar of Fire', 'Library of Enlightenment',
+                'Mercenary Camp', 'Dragon Utopia', 'Shrine of Magic Incantation',
+            ];
+            stats.extKeyLocations = {};
+            for (const name of EXT_KL_NAMES) {
+                const count = stats.objectsByClass[name] || 0;
+                if (count > 0) stats.extKeyLocations[name] = count;
+            }
+
+            // Object density (objects per 100 tiles)
+            const totalTiles = map.mapSize * map.mapSize * (map.hasUnderground ? 2 : 1);
+            stats.objectDensity = totalTiles > 0 ? (stats.objectCount / totalTiles * 100) : 0;
+
+            // Surface vs underground object split
+            stats.objectsBySurface = { surface: 0, underground: 0 };
+            for (const obj of map.objects) {
+                if (obj.objClass === -1) continue;
+                if (obj.z === 1) stats.objectsBySurface.underground++;
+                else stats.objectsBySurface.surface++;
+            }
+
+            // Top object types for summary
+            stats.topObjectTypes = Object.entries(stats.objectsByClass)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 12);
         }
 
         return stats;
@@ -1934,6 +2252,61 @@ const H3Map = (() => {
             [OBJ.CREATURE_BANK]: 'Creature Bank',
             [OBJ.DWELLING]: 'Dwelling',
             [OBJ.DWELLING_FACTION]: 'Dwelling (faction)',
+            // Special locations (class IDs from H3M / VCMI spec)
+            2: 'Altar of Sacrifice',
+            4: 'Arena',
+            8: 'Boat',
+            10: 'Buoy',
+            11: 'Campfire',
+            13: 'Cartographer',
+            14: 'Swan Pond',
+            21: 'Cursed Ground',
+            22: 'Corpse',
+            23: 'Marletto Tower',
+            24: 'Derelict Ship',
+            25: 'Dragon Utopia',
+            27: 'Eye of the Magi',
+            28: 'Faerie Ring',
+            29: 'Flotsam',
+            30: 'Fountain of Fortune',
+            31: 'Fountain of Youth',
+            32: 'Garden of Revelation',
+            35: 'Hill Fort',
+            37: 'Hut of Magi',
+            38: 'Idol of Fortune',
+            39: 'Lean-To',
+            41: 'Library of Enlightenment',
+            42: 'Lighthouse',
+            43: 'Learning Stone',
+            45: 'Magic Lantern',
+            46: 'Magic Spring',
+            49: 'Magic Well',
+            51: 'Mercenary Camp',
+            55: 'Mystical Garden',
+            57: 'Obelisk',
+            58: 'Redwood Observatory',
+            60: 'Pillar of Fire',
+            63: 'Pyramid',
+            64: 'Rally Flag',
+            78: 'Refugee Camp',
+            80: 'Sanctuary',
+            84: 'Crypt',
+            85: 'Creature Lair',
+            86: 'Stables',
+            87: 'Shipyard',
+            88: 'Shrine of Magic Incantation',
+            89: 'Tree of Knowledge',
+            90: 'Subterranean Gate',
+            94: 'Trading Post',
+            95: 'Tavern',
+            96: 'University',
+            100: 'Wagon',
+            103: 'War Machine Factory',
+            104: 'Water Spring',
+            105: 'Water Wheel',
+            106: 'Warrior Tomb',
+            107: 'Whirlpool',
+            108: 'Windmill',
         };
         return names[cls] || `Object ${cls}`;
     }
@@ -1941,20 +2314,22 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     // Minimap rendering
     // ----------------------------------------------------------------
-    function renderMinimap(map, level = 0, scale = 1) {
+    function renderMinimap(map, level = 0, displaySize = 256) {
         if (!map.terrain || !map.terrain[level]) return null;
 
         const size = map.mapSize;
-        const pixelSize = size * scale;
+        // Always render at 1px per tile; CSS scales to displaySize
         const canvas = document.createElement('canvas');
-        canvas.width = pixelSize;
-        canvas.height = pixelSize;
+        canvas.width = size;
+        canvas.height = size;
         const ctx = canvas.getContext('2d');
-        const imgData = ctx.createImageData(pixelSize, pixelSize);
+        if (!ctx) return null;
+        const imgData = ctx.createImageData(size, size);
+        if (!imgData || !imgData.data) return null;
         const pixels = imgData.data;
 
-        // Build object ownership map for towns/mines
-        const ownerMap = new Map(); // "x,y,z" -> ownerIdx
+        // Build object ownership map for towns/mines/heroes
+        const ownerMap = new Map(); // "x,y" -> ownerIdx
         if (map.objects) {
             for (const obj of map.objects) {
                 if (obj.owner !== undefined && obj.owner < 8 && obj.z === level) {
@@ -1978,18 +2353,14 @@ const H3Map = (() => {
                     const color = PLAYER_COLORS[ownerMap.get(ownerKey)];
                     [r, g, b] = color;
                 } else {
-                    // Use terrain color
                     const tIdx = tile.terrain;
                     const colors = TERRAIN_COLORS[tIdx] || TERRAIN_COLORS[0];
-                    // Check if tile is road/visited (unblocked) or blocked
                     const isBlocked = (tile.flags & 0x01) !== 0;
                     if (isBlocked) {
                         r = colors[3]; g = colors[4]; b = colors[5];
                     } else {
                         r = colors[0]; g = colors[1]; b = colors[2];
                     }
-
-                    // Highlight roads slightly
                     if (tile.road > 0) {
                         r = Math.min(255, r + 20);
                         g = Math.min(255, g + 15);
@@ -1997,20 +2368,16 @@ const H3Map = (() => {
                     }
                 }
 
-                // Fill scaled pixels
-                for (let sy = 0; sy < scale; sy++) {
-                    for (let sx = 0; sx < scale; sx++) {
-                        const pi = ((y * scale + sy) * pixelSize + (x * scale + sx)) * 4;
-                        pixels[pi] = r;
-                        pixels[pi + 1] = g;
-                        pixels[pi + 2] = b;
-                        pixels[pi + 3] = 255;
-                    }
-                }
+                const pi = (y * size + x) * 4;
+                pixels[pi] = r;
+                pixels[pi + 1] = g;
+                pixels[pi + 2] = b;
+                pixels[pi + 3] = 255;
             }
         }
 
         ctx.putImageData(imgData, 0, 0);
+        canvas._displaySize = displaySize; // hint to caller for CSS sizing
         return canvas;
     }
 
