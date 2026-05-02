@@ -874,6 +874,36 @@ self.onmessage = async function(e) {
                         } else {
                             toast(`Not a valid FNT file: ${file.name}`, 'error');
                         }
+                    } else if (ext === 'h3m') {
+                        showLoading('Parsing H3M map...');
+                        try {
+                            const mapData = H3Map.parseH3M(data);
+                            state.standaloneFiles.set(file.name, { data, type: 'map', parsed: mapData });
+                            state.sourceFiles.set(file.name, { data, filetype: 'H3M Map' });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            toast(`Loaded H3M: ${file.name} — ${mapData.name}`, 'success');
+                        } catch (err) {
+                            console.error(err);
+                            toast(`Error parsing H3M ${file.name}: ${err.message}`, 'error');
+                        }
+                    } else if (ext === 'h3c') {
+                        showLoading('Parsing H3C campaign...');
+                        try {
+                            const campaign = await H3Map.parseH3C(data);
+                            state.standaloneFiles.set(file.name, { data, type: 'campaign', parsed: campaign });
+                            state.sourceFiles.set(file.name, { data, filetype: 'H3C Campaign' });
+                            if (!state.archive) {
+                                buildStandaloneFileList();
+                                setMode('explorer');
+                            }
+                            toast(`Loaded H3C: ${file.name} — ${campaign.name} (${campaign.mapCount} maps)`, 'success');
+                        } catch (err) {
+                            console.error(err);
+                            toast(`Error parsing H3C ${file.name}: ${err.message}`, 'error');
+                        }
                     }
                 } catch (err) {
                     console.error(err);
@@ -1202,7 +1232,9 @@ self.onmessage = async function(e) {
                 } else if (info.type === 'fnt') {
                     showFntPreview(preview, info.parsed, file.name, info.data);
                 } else if (info.type === 'map') {
-                    showMapPreview(preview, info.parsed, file.name, info.data);
+                    showH3MPreview(preview, info.parsed, file.name, info.data);
+                } else if (info.type === 'campaign') {
+                    showH3CPreview(preview, info.parsed, file.name, info.data);
                 }
                 return;
             }
@@ -1246,9 +1278,20 @@ self.onmessage = async function(e) {
                     showTextPreview(preview, data, file.name);
                 } else if (ext === 'wav' || (ext === '' && isWavData(data))) {
                     showAudioPreview(preview, data, file.name);
-                } else if (ext === 'h3m' || ext === 'h3c') {
-                    const mapInfo = await parseH3MapAsync(data);
-                    showMapPreview(preview, mapInfo, file.name, data);
+                } else if (ext === 'h3m') {
+                    try {
+                        const mapData = H3Map.parseH3M(data);
+                        showH3MPreview(preview, mapData, file.name, data);
+                    } catch (e) {
+                        showMapPreviewFallback(preview, file.name, data, e);
+                    }
+                } else if (ext === 'h3c') {
+                    try {
+                        const campaign = await H3Map.parseH3C(data);
+                        showH3CPreview(preview, campaign, file.name, data);
+                    } catch (e) {
+                        showMapPreviewFallback(preview, file.name, data, e);
+                    }
                 } else {
                     showBinaryPreview(preview, data, file.name);
                 }
@@ -1269,8 +1312,22 @@ self.onmessage = async function(e) {
                 const data = await state.archive.getFile(file.name);
                 hideLoading();
                 if (!data) { showPreviewError(preview, 'File not found'); return; }
-                const mapInfo = await parseH3MapAsync(data);
-                showMapPreview(preview, mapInfo, file.name, data);
+                const ext = file.ext || file.name.split('.').pop().toLowerCase();
+                if (ext === 'h3c') {
+                    try {
+                        const campaign = await H3Map.parseH3C(data);
+                        showH3CPreview(preview, campaign, file.name, data);
+                    } catch (e) {
+                        showMapPreviewFallback(preview, file.name, data, e);
+                    }
+                } else {
+                    try {
+                        const mapData = H3Map.parseH3M(data);
+                        showH3MPreview(preview, mapData, file.name, data);
+                    } catch (e) {
+                        showMapPreviewFallback(preview, file.name, data, e);
+                    }
+                }
             } else if (state.archiveType === 'vid') {
                 showLoading('Loading file...');
                 const data = await state.archive.getFile(file.name);
@@ -2605,143 +2662,403 @@ self.onmessage = async function(e) {
         return data; // couldn't parse, pass through
     }
 
-    // ---- H3M / H3C Map Parser + Preview ----
-    function parseH3Map(data) {
-        // H3M and H3C files are gzip-compressed binaries
-        let raw;
-        try {
-            // Use pako (bundled with many apps) or DecompressionStream (modern browsers)
-            if (typeof pako !== 'undefined') {
-                raw = pako.inflate(data);
-            } else {
-                // DecompressionStream — synchronous wrapper via a sync trick is not possible,
-                // but we can use a pre-checked synchronous fallback with a simple gzip parser
-                // for the tiny header we need (first ~512 bytes are enough)
-                raw = _inflateGzip(data);
-            }
-        } catch (e) {
-            return null;
-        }
-        if (!raw || raw.length < 32) return null;
-        const v = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-        let pos = 0;
+    // ---- H3M / H3C Map Preview (uses H3Map parser from h3mparser.js) ----
 
-        const version = v.getUint32(pos, true); pos += 4;
-        const VERSIONS = { 0x0E: 'RoE', 0x15: 'AB', 0x1C: 'SoD', 0x1D: 'HotA', 0x20: 'WoG/Era', 0x33: 'HotA' };
-        const versionName = VERSIONS[version] || `v${version}`;
-
-        /* is_playable */ pos += 1;
-        const mapSize = v.getUint32(pos, true); pos += 4;
-        const hasUnderground = raw[pos]; pos += 1;
-
-        if (pos + 4 > raw.length) return { versionName, mapSize, hasUnderground, name: '', description: '', difficulty: 1 };
-        const nameLen = v.getUint32(pos, true); pos += 4;
-        if (nameLen > 1024 || pos + nameLen > raw.length) return null;
-        const name = new TextDecoder('latin1').decode(raw.subarray(pos, pos + nameLen)); pos += nameLen;
-
-        const descLen = v.getUint32(pos, true); pos += 4;
-        if (descLen > 65536 || pos + descLen > raw.length) return null;
-        const description = new TextDecoder('latin1').decode(raw.subarray(pos, pos + descLen)); pos += descLen;
-
-        const difficulty = raw[pos];
-        const DIFFICULTIES = ['Easy', 'Normal', 'Hard', 'Expert', 'Impossible'];
-        return {
-            versionName,
-            mapSize,
-            hasUnderground: !!hasUnderground,
-            name: name || '(no name)',
-            description: description || '',
-            difficulty: DIFFICULTIES[difficulty] || 'Normal',
-            rawSize: data.length,
-        };
-    }
-
-    // Minimal synchronous gzip inflate — uses browser's DecompressionStream via a SharedArrayBuffer trick
-    // Falls back to reading at most the compressed header for metadata only.
-    function _inflateGzip(data) {
-        // Attempt synchronous inflate by building a tiny sync reader
-        // DecompressionStream is async-only; we use a promise + Atomics trick
-        // For simplicity: if we can't decompress synchronously, return null and let async path handle it
-        return null;
-    }
-
-    async function parseH3MapAsync(data) {
-        const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
-        try {
-            const ds = new DecompressionStream('gzip');
-            const writer = ds.writable.getWriter();
-            const reader = ds.readable.getReader();
-            writer.write(u8);
-            writer.close();
-            const chunks = [];
-            let total = 0;
-            // Only decompress enough for the header (first 2 KB is plenty)
-            while (total < 2048) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-                total += value.length;
-            }
-            reader.cancel();
-            const out = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) { out.set(c, off); off += c.length; }
-            return parseH3Map(out);
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function showMapPreview(container, mapInfo, filename, rawData) {
+    function showMapPreviewFallback(container, filename, rawData, error) {
         const isH3C = filename.toLowerCase().endsWith('.h3c');
-        const typeLabel = isH3C ? 'H3C Campaign' : 'H3M Map';
         const icon = isH3C ? '⚔️' : '🗺️';
-        const sizeLabel = mapInfo ? `${mapInfo.mapSize}×${mapInfo.mapSize}` : '?';
-        const ugLabel = mapInfo?.hasUnderground ? ' + Underground' : '';
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta"><span>${isH3C ? 'H3C Campaign' : 'H3M Map'}</span></div>
+                    <div class="preview-toolbar">
+                        ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
+                        ${rawData ? `<button title="Export original" id="map-export-btn">💾 Export</button>` : ''}
+                    </div>
+                </div>
+                <div class="preview-body">
+                    <div style="text-align:center;color:var(--text-muted);">
+                        <div style="font-size:40px;margin-bottom:12px;">${icon}</div>
+                        <div>Could not parse: ${escapeHtml(error?.message || 'Unknown error')}</div>
+                    </div>
+                </div>
+            </div>`;
+        const hashBtn = container.querySelector('#map-hash-btn');
+        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, 'Map', rawData));
+        const exportBtn = container.querySelector('#map-export-btn');
+        if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+    }
+
+    // Render a simple bar chart using divs
+    function renderBarChart(entries, maxBarWidth = 200) {
+        if (!entries || entries.length === 0) return '';
+        const maxVal = Math.max(...entries.map(e => e.value));
+        return `<div class="map-chart">${entries.map(e => {
+            const pct = maxVal > 0 ? (e.value / maxVal * 100) : 0;
+            const color = e.color || 'var(--accent, #58a6ff)';
+            return `<div class="map-chart-row">
+                <span class="map-chart-label">${escapeHtml(e.label)}</span>
+                <div class="map-chart-bar-bg"><div class="map-chart-bar" style="width:${pct}%;background:${color};"></div></div>
+                <span class="map-chart-value">${e.value.toLocaleString()}</span>
+            </div>`;
+        }).join('')}</div>`;
+    }
+
+    function terrainColorCSS(name) {
+        const idx = H3Map.TERRAIN_NAMES.indexOf(name);
+        if (idx >= 0 && H3Map.TERRAIN_COLORS[idx]) {
+            const c = H3Map.TERRAIN_COLORS[idx];
+            return `rgb(${c[0]},${c[1]},${c[2]})`;
+        }
+        return 'var(--accent)';
+    }
+
+    function playerColorCSS(name) {
+        const idx = H3Map.PLAYER_COLOR_NAMES.indexOf(name);
+        if (idx >= 0) {
+            const c = H3Map.PLAYER_COLORS[idx];
+            return `rgb(${c[0]},${c[1]},${c[2]})`;
+        }
+        return '#888';
+    }
+
+    function showH3MPreview(container, map, filename, rawData) {
+        const sizeLabel = `${map.mapSize}×${map.mapSize}`;
+        const ugLabel = map.hasUnderground ? ' + Underground' : '';
+        const levels = map.hasUnderground ? 2 : 1;
+
+        // Render minimaps
+        let minimapHtml = '';
+        if (map.terrain) {
+            const scale = Math.max(1, Math.min(4, Math.ceil(256 / map.mapSize)));
+            for (let z = 0; z < levels; z++) {
+                const canvas = H3Map.renderMinimap(map, z, scale);
+                if (canvas) {
+                    const label = z === 0 ? 'Surface' : 'Underground';
+                    minimapHtml += `<div class="minimap-container">
+                        <div class="minimap-label">${label}</div>
+                        <canvas class="minimap-canvas" data-level="${z}" width="${canvas.width}" height="${canvas.height}"></canvas>
+                    </div>`;
+                }
+            }
+        }
+
+        // Player info
+        const activePlayers = map.players.filter(p => p.canHumanPlay || p.canComputerPlay);
+        let playerHtml = '';
+        if (activePlayers.length > 0) {
+            playerHtml = `<div class="map-section"><h3 class="map-section-title">Players (${activePlayers.length})</h3><div class="map-players-grid">`;
+            for (const p of activePlayers) {
+                const color = playerColorCSS(p.colorName);
+                const typeLabel = p.canHumanPlay && p.canComputerPlay ? 'Human/AI' : p.canHumanPlay ? 'Human' : 'AI';
+                const factions = p.factions?.length ? p.factions.join(', ') : (p.isFactionRandom ? 'Random' : '—');
+                const townInfo = p.hasMainTown ? ` · Town at (${p.mainTownX},${p.mainTownY})` : '';
+                const heroName = p.mainHeroName ? ` · Hero: ${p.mainHeroName}` : '';
+                playerHtml += `<div class="map-player-card">
+                    <div class="map-player-color" style="background:${color}"></div>
+                    <div class="map-player-info">
+                        <div class="map-player-name">${escapeHtml(p.colorName)}</div>
+                        <div class="map-player-detail">${typeLabel} · ${escapeHtml(factions)}${townInfo}${heroName}</div>
+                    </div>
+                </div>`;
+            }
+            playerHtml += '</div></div>';
+        }
+
+        // Teams
+        let teamHtml = '';
+        if (map.teamCount > 0 && map.teams) {
+            const teamGroups = {};
+            for (let i = 0; i < 8; i++) {
+                if (map.teams[i] !== undefined) {
+                    const active = map.players[i]?.canHumanPlay || map.players[i]?.canComputerPlay;
+                    if (active) {
+                        const t = map.teams[i];
+                        if (!teamGroups[t]) teamGroups[t] = [];
+                        teamGroups[t].push(H3Map.PLAYER_COLOR_NAMES[i]);
+                    }
+                }
+            }
+            if (Object.keys(teamGroups).length > 0) {
+                teamHtml = '<div class="map-section"><h3 class="map-section-title">Teams</h3><div class="map-teams">';
+                for (const [tid, members] of Object.entries(teamGroups)) {
+                    teamHtml += `<div class="map-team-badge">Team ${parseInt(tid)+1}: ${members.map(n => `<span style="color:${playerColorCSS(n)}">${escapeHtml(n)}</span>`).join(', ')}</div>`;
+                }
+                teamHtml += '</div></div>';
+            }
+        }
+
+        // Terrain chart
+        let terrainChartHtml = '';
+        if (map.stats?.terrainCounts) {
+            const entries = Object.entries(map.stats.terrainCounts)
+                .filter(([n]) => n !== 'Rock')
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: terrainColorCSS(name) }));
+            if (entries.length > 0) {
+                terrainChartHtml = `<div class="map-section"><h3 class="map-section-title">Terrain Distribution</h3>${renderBarChart(entries)}</div>`;
+            }
+        }
+
+        // Object stats
+        let objectStatsHtml = '';
+        if (map.stats) {
+            const s = map.stats;
+            const items = [];
+            if (s.towns?.length) items.push({ label: 'Towns', value: s.towns.length, color: '#e6b422' });
+            if (s.heroes?.length) items.push({ label: 'Heroes', value: s.heroes.length, color: '#58a6ff' });
+            if (s.monsters?.length) items.push({ label: 'Monsters', value: s.monsters.length, color: '#f85149' });
+            if (s.mines?.length) items.push({ label: 'Mines', value: s.mines.length, color: '#8b949e' });
+            if (s.artifacts?.length) items.push({ label: 'Artifacts', value: s.artifacts.length, color: '#d2a8ff' });
+            if (s.roadTiles > 0) items.push({ label: 'Road Tiles', value: s.roadTiles, color: '#8b6914' });
+            if (s.riverTiles > 0) items.push({ label: 'River Tiles', value: s.riverTiles, color: '#1f6feb' });
+            if (items.length > 0) {
+                objectStatsHtml = `<div class="map-section"><h3 class="map-section-title">Map Objects</h3>${renderBarChart(items)}</div>`;
+            }
+        }
+
+        // Towns per player chart
+        let townPlayerHtml = '';
+        if (map.stats?.townsPerPlayer && Object.keys(map.stats.townsPerPlayer).length > 0) {
+            const entries = Object.entries(map.stats.townsPerPlayer)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, count]) => ({ label: name, value: count, color: playerColorCSS(name) }));
+            townPlayerHtml = `<div class="map-section"><h3 class="map-section-title">Towns per Player</h3>${renderBarChart(entries)}</div>`;
+        }
+
+        // Rumors
+        let rumorsHtml = '';
+        if (map.rumors?.length > 0) {
+            rumorsHtml = `<div class="map-section"><h3 class="map-section-title">Rumors (${map.rumors.length})</h3>
+                <div class="map-rumors">${map.rumors.map(r => `<div class="map-rumor"><strong>${escapeHtml(r.name)}</strong><p>${escapeHtml(r.text)}</p></div>`).join('')}</div></div>`;
+        }
+
+        // Win/loss conditions
+        let conditionsHtml = '';
+        if (map.victoryCondition || map.lossCondition) {
+            conditionsHtml = '<div class="map-section"><h3 class="map-section-title">Victory &amp; Loss Conditions</h3><div class="map-conditions">';
+            if (map.victoryCondition) {
+                conditionsHtml += `<div class="map-condition win"><span class="map-cond-icon">🏆</span><span>${escapeHtml(map.victoryCondition.name)}</span></div>`;
+            }
+            if (map.lossCondition) {
+                conditionsHtml += `<div class="map-condition loss"><span class="map-cond-icon">💀</span><span>${escapeHtml(map.lossCondition.name)}</span></div>`;
+            }
+            conditionsHtml += '</div></div>';
+        }
+
+        // Events
+        let eventsHtml = '';
+        if (map.events?.length > 0) {
+            eventsHtml = `<div class="map-section"><h3 class="map-section-title">Timed Events (${map.events.length})</h3>
+                <div class="map-events-list">${map.events.slice(0, 20).map(ev => `<div class="map-event-item"><strong>${escapeHtml(ev.name)}</strong> — Day ${ev.firstOccurrence + 1}${ev.nextOccurrence > 0 ? ` (every ${ev.nextOccurrence} days)` : ''}</div>`).join('')}${map.events.length > 20 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.events.length - 20} more</div>` : ''}</div></div>`;
+        }
 
         container.innerHTML = `
             <div class="preview-wrapper">
                 <div class="preview-header">
                     <span class="preview-filename">${escapeHtml(filename)}</span>
                     <div class="preview-meta">
-                        <span>${typeLabel}</span>
-                        ${mapInfo ? `<span>${mapInfo.versionName}</span>` : ''}
-                        ${mapInfo ? `<span>${sizeLabel}${ugLabel}</span>` : ''}
+                        <span>H3M Map</span>
+                        <span>${escapeHtml(map.versionName)}</span>
+                        <span>${sizeLabel}${ugLabel}</span>
                     </div>
                     <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
                     <div class="preview-toolbar">
                         ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
-                        ${rawData ? `<button title="Export original" id="map-export-btn">💾 ${isH3C ? 'H3C' : 'H3M'}</button>` : ''}
+                        ${rawData ? `<button title="Export original" id="map-export-btn">💾 H3M</button>` : ''}
                     </div>
                 </div>
-                ${mapInfo ? `
                 <div class="preview-body map-preview-body">
-                    <div class="map-preview-card">
-                        <div class="map-preview-icon">${icon}</div>
-                        <h2 class="map-preview-name">${escapeHtml(mapInfo.name)}</h2>
-                        <div class="map-preview-meta-grid">
-                            <div class="map-meta-item"><span class="map-meta-label">Version</span><span class="map-meta-value">${escapeHtml(mapInfo.versionName)}</span></div>
-                            <div class="map-meta-item"><span class="map-meta-label">Size</span><span class="map-meta-value">${sizeLabel}${ugLabel}</span></div>
-                            <div class="map-meta-item"><span class="map-meta-label">Difficulty</span><span class="map-meta-value">${escapeHtml(mapInfo.difficulty)}</span></div>
-                            <div class="map-meta-item"><span class="map-meta-label">File</span><span class="map-meta-value">${escapeHtml(formatSize(rawData ? rawData.length : 0))}</span></div>
+                    <div class="map-preview-card map-preview-full">
+                        <div class="map-header-row">
+                            <div class="map-header-info">
+                                <div class="map-preview-icon">🗺️</div>
+                                <h2 class="map-preview-name">${escapeHtml(map.name || '(unnamed)')}</h2>
+                            </div>
+                            ${minimapHtml ? `<div class="map-minimaps">${minimapHtml}</div>` : ''}
                         </div>
-                        ${mapInfo.description ? `<p class="map-preview-desc">${escapeHtml(mapInfo.description)}</p>` : ''}
+                        <div class="map-preview-meta-grid">
+                            <div class="map-meta-item"><span class="map-meta-label">Version</span><span class="map-meta-value">${escapeHtml(map.versionName)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Size</span><span class="map-meta-value">${sizeLabel}${ugLabel}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Difficulty</span><span class="map-meta-value">${escapeHtml(map.difficultyName)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Players</span><span class="map-meta-value">${map.playerCount}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Objects</span><span class="map-meta-value">${map.objects?.length || 0}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">File Size</span><span class="map-meta-value">${formatSize(rawData?.length || 0)}</span></div>
+                            ${map.levelLimit ? `<div class="map-meta-item"><span class="map-meta-label">Level Limit</span><span class="map-meta-value">${map.levelLimit === 0 ? 'None' : map.levelLimit}</span></div>` : ''}
+                            ${map.stats?.objectCount ? `<div class="map-meta-item"><span class="map-meta-label">Total Objects</span><span class="map-meta-value">${map.stats.objectCount}</span></div>` : ''}
+                        </div>
+                        ${map.description ? `<p class="map-preview-desc">${escapeHtml(map.description)}</p>` : ''}
+                        ${conditionsHtml}
+                        ${playerHtml}
+                        ${teamHtml}
+                        ${terrainChartHtml}
+                        ${objectStatsHtml}
+                        ${townPlayerHtml}
+                        ${rumorsHtml}
+                        ${eventsHtml}
                     </div>
-                </div>` : `
-                <div class="preview-body">
-                    <div style="text-align:center;color:var(--text-muted);">
-                        <div style="font-size:40px;margin-bottom:12px;">${icon}</div>
-                        <div>Could not parse map/campaign</div>
-                    </div>
-                </div>`}
+                </div>
             </div>
         `;
+
+        // Render minimap canvases
+        if (map.terrain) {
+            const scale = Math.max(1, Math.min(4, Math.ceil(256 / map.mapSize)));
+            for (let z = 0; z < levels; z++) {
+                const canvas = H3Map.renderMinimap(map, z, scale);
+                if (canvas) {
+                    const target = container.querySelector(`.minimap-canvas[data-level="${z}"]`);
+                    if (target) {
+                        target.getContext('2d').drawImage(canvas, 0, 0);
+                    }
+                }
+            }
+        }
+
+        // Event handlers
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
             container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
         const hashBtn = container.querySelector('#map-hash-btn');
-        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, typeLabel, rawData));
+        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, 'H3M Map', rawData));
         const exportBtn = container.querySelector('#map-export-btn');
         if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+    }
+
+    function showH3CPreview(container, campaign, filename, rawData) {
+        // Scenario cards
+        let scenarioHtml = '';
+        if (campaign.scenarios?.length > 0) {
+            scenarioHtml = '<div class="map-section"><h3 class="map-section-title">Scenarios</h3><div class="h3c-scenarios">';
+            for (let i = 0; i < campaign.scenarios.length; i++) {
+                const sc = campaign.scenarios[i];
+                const mapData = campaign.maps?.[i];
+                const mapName = mapData?.name || sc.mapName || `Scenario ${i + 1}`;
+                const mapSizeLabel = mapData?.mapSize ? `${mapData.mapSize}×${mapData.mapSize}` : '';
+                const hasUg = mapData?.hasUnderground ? ' + UG' : '';
+                const diffName = sc.difficultyName || mapData?.difficultyName || '';
+                const playerCount = mapData?.playerCount || '?';
+
+                // Minimap for embedded map
+                let minimapTag = '';
+                if (mapData?.terrain) {
+                    const scale = Math.max(1, Math.min(3, Math.ceil(128 / mapData.mapSize)));
+                    minimapTag = `<canvas class="h3c-minimap-canvas" data-scenario="${i}" width="${mapData.mapSize * scale}" height="${mapData.mapSize * scale}"></canvas>`;
+                }
+
+                const precondBits = typeof sc.preconditions === 'number' ? sc.preconditions : 0;
+                const precondText = precondBits > 0 ? `After: ${Array.from({length: 16}, (_, b) => (precondBits & (1 << b)) ? '#' + (b+1) : null).filter(Boolean).join(', ')}` : 'Available from start';
+
+                scenarioHtml += `<div class="h3c-scenario-card" data-scenario="${i}">
+                    <div class="h3c-scenario-header">
+                        <span class="h3c-scenario-number">${i + 1}</span>
+                        <span class="h3c-scenario-name">${escapeHtml(mapName)}</span>
+                        ${mapData?.parseError ? '<span class="h3c-scenario-error" title="Parse error">⚠️</span>' : ''}
+                    </div>
+                    <div class="h3c-scenario-body">
+                        ${minimapTag}
+                        <div class="h3c-scenario-info">
+                            ${mapSizeLabel ? `<div>${mapSizeLabel}${hasUg}</div>` : ''}
+                            ${diffName ? `<div>Difficulty: ${escapeHtml(diffName)}</div>` : ''}
+                            <div>Players: ${playerCount}</div>
+                            <div class="h3c-precond">${escapeHtml(precondText)}</div>
+                        </div>
+                    </div>
+                    ${sc.regionText ? `<div class="h3c-scenario-region">${escapeHtml(sc.regionText)}</div>` : ''}
+                    <div class="h3c-scenario-actions">
+                        <button class="h3c-open-map" data-idx="${i}" title="Open this map in H3M viewer">🗺️ Open Map</button>
+                        ${campaign.rawMaps?.[i] ? `<button class="h3c-export-map" data-idx="${i}" title="Export as H3M">💾 Export H3M</button>` : ''}
+                    </div>
+                </div>`;
+            }
+            scenarioHtml += '</div></div>';
+        }
+
+        container.innerHTML = `
+            <div class="preview-wrapper">
+                <div class="preview-header">
+                    <span class="preview-filename">${escapeHtml(filename)}</span>
+                    <div class="preview-meta">
+                        <span>H3C Campaign</span>
+                        <span>${escapeHtml(campaign.versionName)}</span>
+                        <span>${campaign.scenarioCount} scenarios</span>
+                    </div>
+                    <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
+                    <div class="preview-toolbar">
+                        ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
+                        ${rawData ? `<button title="Export original" id="map-export-btn">💾 H3C</button>` : ''}
+                    </div>
+                </div>
+                <div class="preview-body map-preview-body">
+                    <div class="map-preview-card map-preview-full">
+                        <div class="map-header-row">
+                            <div class="map-header-info">
+                                <div class="map-preview-icon">⚔️</div>
+                                <h2 class="map-preview-name">${escapeHtml(campaign.name || '(unnamed campaign)')}</h2>
+                            </div>
+                        </div>
+                        <div class="map-preview-meta-grid">
+                            <div class="map-meta-item"><span class="map-meta-label">Version</span><span class="map-meta-value">${escapeHtml(campaign.versionName)}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Scenarios</span><span class="map-meta-value">${campaign.scenarioCount}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">Maps</span><span class="map-meta-value">${campaign.mapCount}</span></div>
+                            <div class="map-meta-item"><span class="map-meta-label">File Size</span><span class="map-meta-value">${formatSize(rawData?.length || 0)}</span></div>
+                        </div>
+                        ${campaign.description ? `<p class="map-preview-desc">${escapeHtml(campaign.description)}</p>` : ''}
+                        ${scenarioHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Render scenario minimaps
+        if (campaign.maps) {
+            for (let i = 0; i < campaign.maps.length; i++) {
+                const mapData = campaign.maps[i];
+                if (mapData && mapData.terrain) {
+                    const scale = Math.max(1, Math.min(3, Math.ceil(128 / mapData.mapSize)));
+                    const canvas = H3Map.renderMinimap(mapData, 0, scale);
+                    if (canvas) {
+                        const target = container.querySelector(`.h3c-minimap-canvas[data-scenario="${i}"]`);
+                        if (target) target.getContext('2d').drawImage(canvas, 0, 0);
+                    }
+                }
+            }
+        }
+
+        // Event handlers
+        container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
+            container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        const hashBtn = container.querySelector('#map-hash-btn');
+        if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, 'H3C Campaign', rawData));
+        const exportBtn = container.querySelector('#map-export-btn');
+        if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
+
+        // Open embedded map buttons
+        container.querySelectorAll('.h3c-open-map').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.idx);
+                const mapData = campaign.maps?.[idx];
+                if (mapData && !mapData.parseError) {
+                    const scenName = campaign.scenarios?.[idx]?.mapName || `Scenario ${idx + 1}`;
+                    showH3MPreview(container, mapData, `${filename} → ${scenName}`, campaign.rawMaps?.[idx]);
+                } else {
+                    toast('Could not parse embedded map', 'error');
+                }
+            });
+        });
+
+        // Export embedded map buttons
+        container.querySelectorAll('.h3c-export-map').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.idx);
+                const raw = campaign.rawMaps?.[idx];
+                if (raw) {
+                    const scenName = campaign.scenarios?.[idx]?.mapName || `scenario_${idx + 1}`;
+                    const exportName = scenName.endsWith('.h3m') ? scenName : scenName + '.h3m';
+                    exportBlob(new Blob([raw]), exportName);
+                }
+            });
+        });
     }
 
     function showAudioPreview(container, data, filename, mimeType = 'audio/wav') {

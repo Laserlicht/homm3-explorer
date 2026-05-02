@@ -989,6 +989,302 @@ body {
     font-family: var(--font-mono);
 }
 
+/* Map preview extended */
+.map-preview-full {
+    max-width: 800px;
+}
+.map-header-row {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    margin-bottom: 12px;
+}
+.map-header-info {
+    flex: 1;
+    min-width: 0;
+}
+.map-minimaps {
+    display: flex;
+    gap: 12px;
+    flex-shrink: 0;
+}
+.minimap-container {
+    text-align: center;
+}
+.minimap-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+.minimap-canvas {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    image-rendering: pixelated;
+    max-width: 256px;
+    max-height: 256px;
+}
+
+/* Map sections */
+.map-section {
+    margin-top: 16px;
+}
+.map-section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin: 0 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Players grid */
+.map-players-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.map-player-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+}
+.map-player-color {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.map-player-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.map-player-detail {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* Teams */
+.map-teams {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.map-team-badge {
+    padding: 4px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Bar charts */
+.map-chart {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.map-chart-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+.map-chart-label {
+    width: 100px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.map-chart-bar-bg {
+    flex: 1;
+    height: 14px;
+    background: var(--bg-tertiary, #1a1a2e);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.map-chart-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width .3s ease;
+    min-width: 2px;
+}
+.map-chart-value {
+    width: 60px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+/* Conditions */
+.map-conditions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.map-condition {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.map-cond-icon {
+    font-size: 16px;
+}
+
+/* Rumors */
+.map-rumors {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.map-rumor {
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.map-rumor strong {
+    color: var(--text-primary);
+}
+.map-rumor p {
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Events */
+.map-events-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.map-event-item {
+    padding: 4px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* H3C Campaign */
+.h3c-scenarios {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.h3c-scenario-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius, 6px);
+    overflow: hidden;
+}
+.h3c-scenario-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary, #1a1a2e);
+    border-bottom: 1px solid var(--border);
+}
+.h3c-scenario-number {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent, #58a6ff);
+    color: #fff;
+    border-radius: 50%;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.h3c-scenario-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.h3c-scenario-error {
+    margin-left: auto;
+}
+.h3c-scenario-body {
+    display: flex;
+    gap: 12px;
+    padding: 10px 12px;
+    align-items: flex-start;
+}
+.h3c-minimap-canvas {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    image-rendering: pixelated;
+    max-width: 128px;
+    max-height: 128px;
+    flex-shrink: 0;
+}
+.h3c-scenario-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.h3c-precond {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.h3c-scenario-region {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.h3c-scenario-actions {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+}
+.h3c-scenario-actions button {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-tertiary, #1a1a2e);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.h3c-scenario-actions button:hover {
+    background: var(--accent, #58a6ff);
+    color: #fff;
+    border-color: var(--accent, #58a6ff);
+}
+
 /* Text preview */
 .preview-text {
     width: 100%;
