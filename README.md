@@ -7,6 +7,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 - **Drag & drop** game files directly onto the page, or use the file picker
 - **GOG installer support** — open `.exe` or `.bin` GOG installers directly; HoMM3 data is extracted on the fly
 - **ISO CD image support** — open original HoMM3 CD images (`.iso`); game files are extracted directly or from InstallShield CABs
+- **StuffIt support** — open HoMM3 Mac Archives (`.sit`)
 - **Archive browsing** — navigate the contents of any supported container
 - **Rich preview** for all major asset types:
   - Images: `.PCX`, `.D32` (raw RGBA), `.DDS`
@@ -14,6 +15,7 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
   - Fonts: `.FNT` bitmap fonts rendered as a full 16×16 character sheet
   - Audio: `.SND` archives containing WAV samples (in-browser playback)
   - Video: `.VID` archives with `.SMK` (Smacker) and `.BIK` (Bink) videos — decoded entirely in JavaScript
+  - Maps / Campaigns: `.H3M` and `.H3C` - shows informations, statistics and previews
 - **Export** any file from an archive to disk
 - **Grid / List view** toggle for file browsers
 - Works fully offline after the page has loaded
