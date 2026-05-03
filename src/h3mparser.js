@@ -235,7 +235,8 @@ const H3Map = (() => {
         SPELL_SCROLL: 93,
         HERO_PLACEHOLDER: 214,
         RESOURCE: 79, RANDOM_RESOURCE: 76,
-        DWELLING: 17, DWELLING_FACTION: 20,
+        DWELLING: 17, DWELLING2: 18, DWELLING3: 19, DWELLING_FACTION: 20,
+        LIGHTHOUSE: 42, SHIPYARD: 87,
         ABANDONED_MINE: 220,
         CREATURE_BANK: 16,
     };
@@ -1419,10 +1420,98 @@ const H3Map = (() => {
             case OBJ.HERO_PLACEHOLDER:
                 readHeroPlaceholderObject(r, feat, obj);
                 break;
-            case OBJ.ABANDONED_MINE:
-                if (feat.isHOTA) r.skip(4); // resource bitmask
+            case 88: case 89: case 90: // SHRINE_OF_MAGIC_INCANTATION/GESTURE/THOUGHT
+                // Spell ID stored as u32 (readSpell32)
+                obj.spellId = r.u32();
                 break;
-            default:
+            case OBJ.MINE:
+            case OBJ.ABANDONED_MINE:
+                // if subid < 7 → readMine (owner u32), else → readAbandonedMine (resource bitmask + HotA5+ guards)
+                if (obj.objSubID < 7) {
+                    obj.owner = r.u32();
+                    obj.ownerName = obj.owner < 8 ? PLAYER_COLOR_NAMES[obj.owner] : 'Neutral';
+                } else {
+                    r.skip(4); // resource bitmask (resourcesBytes=4 for all versions)
+                    if (feat.isHOTA && feat.hotaSub >= 5) {
+                        const hasCustomGuards = r.bool();
+                        if (hasCustomGuards) {
+                            r.i32(); // creature type
+                            r.i32(); // min amount
+                            r.i32(); // max amount
+                        } else {
+                            r.skip(12); // skipUnused(12)
+                        }
+                    }
+                }
+                break;
+            case OBJ.DWELLING: case OBJ.DWELLING2: case OBJ.DWELLING3: case OBJ.DWELLING_FACTION:
+                // Creature Generators 1-4: owner as u32
+                obj.owner = r.u32();
+                obj.ownerName = obj.owner < 8 ? PLAYER_COLOR_NAMES[obj.owner] : 'Neutral';
+                break;
+            case OBJ.LIGHTHOUSE: case OBJ.SHIPYARD:
+                // Flaggable objects: owner as u32
+                obj.owner = r.u32();
+                obj.ownerName = obj.owner < 8 ? PLAYER_COLOR_NAMES[obj.owner] : 'Neutral';
+                break;
+            // Banks: HotA3+ additional data (variable length)
+            case OBJ.CREATURE_BANK: case 24: case 25: case 84: case 85: // CREATOR_BANK, DERELICT_SHIP, DRAGON_UTOPIA, CRYPT, SHIPWRECK
+                if (feat.isHOTA && feat.hotaSub >= 3) {
+                    obj.guardsPreset = r.i32();
+                    r.skip(1); // upgradedStackPresence (i8)
+                    const bankArtCount = r.u32();
+                    obj.bankArtifacts = [];
+                    for (let i = 0; i < bankArtCount; i++) obj.bankArtifacts.push(r.u32());
+                }
+                break;
+            // Pyramid + objects using readRewardWithGarbage: HotA5+ always 8 bytes
+            case 63: case 29: case 102: // PYRAMID, FLOTSAM, TREE_OF_KNOWLEDGE
+                if (feat.isHOTA && feat.hotaSub >= 5) r.skip(8);
+                break;
+            // Objects using readRewardWithArtifact: HotA5+ always 8 bytes
+            case 22: case 82: case 86: case 101: case 108: // CORPSE, SEA_CHEST, SHIPWRECK_SURVIVOR, TREASURE_CHEST, WARRIORS_TOMB
+                if (feat.isHOTA && feat.hotaSub >= 5) r.skip(8);
+                break;
+            // Campfire, LeanTo, Wagon: HotA5+ always 18 bytes (4 content + 14 resource data/padding)
+            case 12: case 39: case 105: // CAMPFIRE, LEAN_TO, WAGON
+                if (feat.isHOTA && feat.hotaSub >= 5) r.skip(18);
+                break;
+            // Black Market (class 7): HotA5+ 7 artifacts (2-byte artID + 2-byte spell each)
+            case 7: // BLACK_MARKET
+                if (feat.isHOTA && feat.hotaSub >= 5) r.skip(28); // 7 × (artifact16 + spell16)
+                break;
+            // University (class 104) + HOTA_CUSTOM_OBJECT_2 sub=0 (class 146): HotA5+ i32 + 4-byte skill bitmask
+            case 104: // UNIVERSITY
+                if (feat.isHOTA && feat.hotaSub >= 5) r.skip(8); // i32 customized + 4-byte skill bitmask
+                break;
+            case 146: // HOTA_CUSTOM_OBJECT_2 (Seafaring Academy sub=0, others generic)
+                if (feat.isHOTA && feat.hotaSub >= 5 && obj.objSubID === 0) r.skip(8); // readUniversity
+                break;
+            // HOTA_CUSTOM_OBJECT_1 (class 145):
+            // sub=0 (Ancient Lamp): readRewardWithAmount → HotA5+: 18 bytes
+            // sub=1 (Sea Barrel): readLeanTo → HotA5+: 18 bytes
+            // sub=2 (Jetsam), sub=3 (Vial of Mana): readRewardWithGarbage → HotA5+: 8 bytes
+            // sub=4 (Bottle of ...?): readRewardWithGarbage → HotA5+: 8 bytes
+            case 145: // HOTA_CUSTOM_OBJECT_1
+                if (feat.isHOTA && feat.hotaSub >= 5) {
+                    if (obj.objSubID === 0 || obj.objSubID === 1) r.skip(18);
+                    else r.skip(8);
+                }
+                break;
+            // HOTA_CUSTOM_OBJECT_3 sub=12 (Trapper Lodge): HotA9+: 16 bytes
+            case 144: // HOTA_CUSTOM_OBJECT_3
+                if (feat.isHOTA && feat.hotaSub >= 9 && obj.objSubID === 12) r.skip(16);
+                break;
+            // BORDER_GATE (class 212):
+            // sub=1000 (Quest Gate): readQuestGuard
+            // sub=1001 (HotA Grave): readHotaGrave, HotA5+: 18 bytes
+            case OBJ.BORDER_GATE:
+                if (obj.objSubID === 1000) {
+                    readQuestGuardObject(r, feat, obj); // Quest Gate = Quest Guard
+                } else if (obj.objSubID === 1001 && feat.isHOTA && feat.hotaSub >= 5) {
+                    r.skip(18); // readHotaGrave: content(4) + artifact(4) + amount(4) + resource(1) + skip(5) = 18
+                }
+                break;
                 // No extra data for most objects
                 break;
         }
@@ -1497,11 +1586,11 @@ const H3Map = (() => {
         r.u16(); // nextOccurrence (u16, not u8!)
         r.skip(16); // padding (16 bytes, not 17!)
 
-        // (readEventCommon in VCMI) HotA7+: affected difficulties bitmask
+        // (readEventCommon) HotA7+: affected difficulties bitmask
         if (feat.isHOTA && feat.hotaSub >= 7) {
             r.i32(); // affectedDifficulties bitmask
         }
-        // (readEventCommon in VCMI) HotA9+: event system link
+        // (readEventCommon) HotA9+: event system link
         if (feat.isHOTA && feat.hotaSub >= 9) {
             const usesEventSystem = r.bool();
             if (usesEventSystem) {
@@ -1522,7 +1611,7 @@ const H3Map = (() => {
             r.bool(); // neutralAffected
         }
 
-        // buildings (after all HotA extras, per VCMI)
+        // buildings (after all HotA extras)
         r.skip(6);
         // creatures
         for (let i = 0; i < 7; i++) r.u16();
@@ -1660,6 +1749,8 @@ const H3Map = (() => {
             const questArtifact = r.u8();
             if (questArtifact !== 0xFF) {
                 readSeerReward(r, feat, obj); // RoE: just reward, no quest structure
+            } else {
+                r.skip(1); // skipZero(1) when no quest (missionType=NONE)
             }
             r.skip(2); // padding
             return;
@@ -1678,7 +1769,7 @@ const H3Map = (() => {
             }
         }
 
-        r.skip(2); // padding
+        r.skip(2); // skipZero(2) at end of seer hut
     }
 
     function readSeerHutQuest(r, feat, obj) {
@@ -1686,8 +1777,9 @@ const H3Map = (() => {
         const missionType = readQuest(r, feat, obj);
         if (missionType !== 0) {
             readSeerReward(r, feat, obj);
+        } else {
+            r.skip(1); // skipZero(1) only when missionType==NONE
         }
-        r.skip(1); // zero padding after each quest/reward pair
     }
 
     function readSeerReward(r, feat, obj) {
@@ -1723,7 +1815,7 @@ const H3Map = (() => {
         switch (missionType) {
             case 0: return 0; // NONE — no further data
             case 1: r.u32(); break; // level
-            case 2: r.skip(4 * 4); break; // primary skills (4 bytes each)
+            case 2: r.skip(4); break; // primary skills (4 × u8 = 4 bytes total)
             case 3: r.u32(); break; // defeat hero — questIdentifier
             case 4: r.u32(); break; // defeat monster — questIdentifier
             case 5: { // artifacts
@@ -1781,8 +1873,8 @@ const H3Map = (() => {
     // Witch Hut
     // ----------------------------------------------------------------
     function readWitchHutObject(r, feat, obj) {
-        if (feat.isSOD || feat.isHOTA) {
-            r.skip(4); // allowed skills bitmask
+        if (feat.isAB) {
+            r.skip(4); // allowed skills bitmask (AB+ format)
         }
     }
 
@@ -1821,6 +1913,10 @@ const H3Map = (() => {
         }
         if (obj.objClass === OBJ.SPELL_SCROLL) {
             obj.spellId = r.u32();
+        }
+        // HotA5+: pickupMode (u32) + pickupFlags (u8) = 5 bytes (only for ARTIFACT, not SPELL_SCROLL)
+        if (feat.isHOTA && feat.hotaSub >= 5 && obj.objClass !== OBJ.SPELL_SCROLL) {
+            r.skip(5);
         }
     }
 
@@ -1873,7 +1969,10 @@ const H3Map = (() => {
         }
         // Artifacts
         const artCount = r.u8();
-        for (let i = 0; i < artCount; i++) readArtifactId(r, feat);
+        for (let i = 0; i < artCount; i++) {
+            readArtifactId(r, feat);
+            if (feat.isHOTA && feat.hotaSub >= 5) r.u16(); // spell scroll ID (always present for HotA5+)
+        }
         // Spells
         const spellCount = r.u8();
         for (let i = 0; i < spellCount; i++) r.u8();
@@ -1898,7 +1997,7 @@ const H3Map = (() => {
         // HotA9+: event system link
         if (includeHotaExtras && feat.isHOTA && feat.hotaSub >= 9) {
             const usesEventSystem = r.bool();
-            if (usesEventSystem) r.i32(); // eventID
+            if (usesEventSystem) r.i32(); // eventID (+ synchronizeObjects bool omitted for Pandora)
         }
     }
 
@@ -1930,7 +2029,7 @@ const H3Map = (() => {
         // HotA9+: event system link
         if (feat.isHOTA && feat.hotaSub >= 9) {
             const usesEventSystem = r.bool();
-            if (usesEventSystem) r.i32(); // eventID
+            if (usesEventSystem) { r.i32(); r.bool(); } // eventID + synchronizeObjects
         }
     }
 
@@ -1946,13 +2045,18 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     function readRandomDwellingObject(r, feat, obj) {
         obj.owner = r.u32();
-        if (obj.objClass === OBJ.RANDOM_DWELLING) {
+        // hasFactionInfo = RANDOM_DWELLING(216) || RANDOM_DWELLING_LVL(217)
+        // hasLevelInfo   = RANDOM_DWELLING(216) || RANDOM_DWELLING_FACTION(218)
+        // Our naming: RANDOM_DWELLING_L=217 (=RANDOM_DWELLING_LVL), RANDOM_DWELLING_LVL=218 (=RANDOM_DWELLING_FACTION)
+        const hasFactionInfo = obj.objClass === OBJ.RANDOM_DWELLING || obj.objClass === OBJ.RANDOM_DWELLING_L;
+        const hasLevelInfo   = obj.objClass === OBJ.RANDOM_DWELLING || obj.objClass === OBJ.RANDOM_DWELLING_LVL;
+        if (hasFactionInfo) {
             obj.identifier = r.u32();
             if (obj.identifier === 0) {
                 obj.factionMask = feat.isROE ? r.u8() : r.u16();
             }
         }
-        if (obj.objClass === OBJ.RANDOM_DWELLING || obj.objClass === OBJ.RANDOM_DWELLING_L) {
+        if (hasLevelInfo) {
             obj.minLevel = r.u8();
             obj.maxLevel = r.u8();
         }
@@ -2263,7 +2367,7 @@ const H3Map = (() => {
             [OBJ.LEAN_TO]: 'Lean-To',
             [OBJ.WAGON]: 'Wagon',
             [OBJ.BORDER_GATE]: 'Border Gate',
-            // Static numeric IDs (VCMI MapObjectBaseID enum)
+            // Static numeric IDs (MapObjectBaseID enum)
             2: 'Altar of Sacrifice',
             3: 'Anchor Point',
             4: 'Arena',
@@ -2337,7 +2441,7 @@ const H3Map = (() => {
             110: 'Watering Hole',
             111: 'Whirlpool',
             112: 'Windmill',
-            // Decorations (114–161), VCMI MapObjectBaseID enum
+            // Decorations (114–161), MapObjectBaseID enum
             114: 'Brush', 115: 'Bush', 116: 'Cactus', 117: 'Canyon', 118: 'Crater',
             119: 'Dead Vegetation', 120: 'Flowers', 121: 'Frozen Lake', 122: 'Hedge',
             123: 'Hill', 124: 'Hole', 125: 'Kelp', 126: 'Lake', 127: 'Lava Flow',
@@ -2353,10 +2457,10 @@ const H3Map = (() => {
             140: 'Rock Decoration',    // rocks, mountains, ice crystals
             141: 'Terrain Patch',      // ice/sand zone patches (Zice*, Zsand*)
             142: 'Water Decoration',   // water edge decorations (avwrhs*)
-            // HotA internal object class IDs (VCMI HOTA_CUSTOM_OBJECT)
+            // HotA internal object class IDs (HOTA_CUSTOM_OBJECT)
             144: 'HotA Decoration', 145: 'HotA Decoration', 146: 'HotA Decoration',
             // IDs 165–211: HotA/SoD adventure map decoration objects
-            // (not in VCMI C++ enum; names derived from animation file prefixes)
+            // (not C++ enum; names derived from animation file prefixes)
             165: 'Decoration', 166: 'Decoration', 167: 'Decoration', 168: 'Decoration',
             169: 'Decoration', 170: 'Decoration', 171: 'Decoration', 172: 'Decoration',
             173: 'Decoration', 174: 'Decoration', 175: 'Decoration', 176: 'Decoration',
