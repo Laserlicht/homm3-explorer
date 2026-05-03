@@ -37,7 +37,8 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.H3C` | Heroes of Might and Magic III campaign file |
 | `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) or InstallShield v5 self-extracting archive |
 | `.ISO` | Original CD image (ISO 9660, InstallShield CABs) |
-| `.SIT` | StuffIt 5 archive (Mac CD distribution) |
+| `.SIT` | StuffIt 5 archive (Mac CD distribution); decompresses inner Toast disc image (HFS), detects VISE installer automatically |
+| Mac VISE 3.6 Lite | Mac installer packed inside `.SIT` → HFS → VISE; game files extracted on the fly |
 
 ## Usage
 
@@ -61,8 +62,8 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `lzma2.js` | LZMA2 decompressor (based on 7-Zip SDK by Igor Pavlov) | MIT |
 | `video-decoders.js` | SMK and BIK video decoders (derived from FFmpeg) | **LGPL-2.1-or-later** |
 | `isextract.js` | InstallShield v5 self-extracting EXE decoder | MIT |
-| `sitextract.js` | StuffIt 5 archive extractor (based on The Unarchiver / unar) | **LGPL-2.1-or-later** |
-| `hfsextract.js` | HFS disk image reader | MIT |
+| `sitextract.js` | StuffIt 5 archive extractor (based on The Unarchiver / unar) | **LGPL-2.1-or-later** || `viseextract.js` (Mac VISE 3.6 Lite extractor, format independently reverse-engineered) | MIT || `hfsextract.js` | HFS disk image reader | MIT |
+| `viseextract.js` | Mac VISE 3.6 Lite installer extractor — fully reverse-engineered format, custom VISE deflate decoder | MIT |
 | `h3mparser.js` | H3M / H3C map and campaign parser, minimap renderer | MIT |
 
 ## License

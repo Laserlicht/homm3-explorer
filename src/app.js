@@ -4897,7 +4897,47 @@ self.onmessage = async function(e) {
                                 const ext = hf.name.includes('.')
                                     ? hf.name.slice(hf.name.lastIndexOf('.') + 1).toLowerCase()
                                     : '';
-                                if (gameExts.has(ext)) {
+
+                                // ── VISE installer detection ──────────────────────────
+                                // The Mac CD carries the game as a VISE 3.6 Lite installer
+                                // ("Install Heroes 3 Complete") rather than loose game files.
+                                // Detect it by name and SVCT magic bytes, then extract
+                                // game files (LOD, SND, VID) via VISEExtract.
+                                const isViseInstaller = !ext &&
+                                    /install\s+heroes/i.test(hf.name) &&
+                                    typeof VISEExtract !== 'undefined';
+
+                                if (isViseInstaller) {
+                                    showLoading(`Reading VISE installer "${hf.name}" (${(hf.dfLen / 1e6).toFixed(0)} MB)…`, -1);
+                                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                                    const instData = HFSExtract.extractFile(toastData, hf);
+                                    if (!VISEExtract.isViseInstaller(instData)) {
+                                        toast(`${hf.name}: Not a VISE installer (missing SVCT magic).`, 'warning');
+                                        continue;
+                                    }
+                                    try {
+                                        let viseCount = 0;
+                                        await VISEExtract.extractGameFiles(instData, {
+                                            onProgress(done, total, name) {
+                                                showLoading(
+                                                    `Extracting VISE: ${name} (${done}/${total})…`,
+                                                    done / Math.max(total, 1)
+                                                );
+                                            },
+                                            async onGameFile(name, fileData) {
+                                                await registerGameFile(name, fileData, 'VISE');
+                                                viseCount++;
+                                                extracted++;
+                                            },
+                                        });
+                                        if (viseCount === 0) {
+                                            toast(`VISE installer "${hf.name}": no game files found.`, 'warning');
+                                        }
+                                    } catch (err) {
+                                        toast(`VISE extraction failed: ${err.message}`, 'error');
+                                        console.error(err);
+                                    }
+                                } else if (gameExts.has(ext)) {
                                     showLoading(`Extracting ${hf.name} from HFS disc...`, -1);
                                     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
                                     const fileData = HFSExtract.extractFile(toastData, hf);
