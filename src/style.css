@@ -2189,3 +2189,37 @@ canvas.img-border {
 .h3c-lc { color: #f85149; font-size: 12px; }
 .h3c-factions { color: var(--text-muted); font-size: 11px; }
 
+/* ── Artifact list table ─────────────────────────────────────────── */
+.map-artifact-list-wrap {
+    overflow-x: auto;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.map-artifact-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.map-artifact-table th {
+    position: sticky;
+    top: 0;
+    background: var(--surface-alt, #1c2026);
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border, #30363d);
+}
+.map-artifact-table td {
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border-subtle, #21262d);
+    color: var(--text-primary);
+}
+.map-artifact-table td.art-pos {
+    font-family: monospace;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.map-artifact-table tr:hover td {
+    background: var(--surface-hover, #1f2937);
+}

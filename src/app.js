@@ -60,6 +60,8 @@
 
         // Text encoding: 'auto' or a specific IANA label
         textEncoding: 'auto',
+        // Map / Campaign encoding: 'auto' or a specific IANA label
+        mapEncoding: 'auto',
 
         // Last text preview data for re-rendering on encoding change
         lastTextData: null,
@@ -1232,9 +1234,17 @@ self.onmessage = async function(e) {
                 } else if (info.type === 'fnt') {
                     showFntPreview(preview, info.parsed, file.name, info.data);
                 } else if (info.type === 'map') {
-                    showH3MPreview(preview, info.parsed, file.name, info.data);
+                    let mapParsed = info.parsed;
+                    if (state.mapEncoding !== 'auto' && info.data) {
+                        try { mapParsed = H3Map.parseH3M(info.data, { encoding: state.mapEncoding }); } catch { /* fallback to cached */ }
+                    }
+                    showH3MPreview(preview, mapParsed, file.name, info.data);
                 } else if (info.type === 'campaign') {
-                    showH3CPreview(preview, info.parsed, file.name, info.data);
+                    let campaignParsed = info.parsed;
+                    if (state.mapEncoding !== 'auto' && info.data) {
+                        try { campaignParsed = await H3Map.parseH3C(info.data, { encoding: state.mapEncoding }); } catch { /* fallback to cached */ }
+                    }
+                    showH3CPreview(preview, campaignParsed, file.name, info.data);
                 }
                 return;
             }
@@ -1280,14 +1290,14 @@ self.onmessage = async function(e) {
                     showAudioPreview(preview, data, file.name);
                 } else if (ext === 'h3m') {
                     try {
-                        const mapData = H3Map.parseH3M(data);
+                        const mapData = H3Map.parseH3M(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
                         showH3MPreview(preview, mapData, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
                     }
                 } else if (ext === 'h3c') {
                     try {
-                        const campaign = await H3Map.parseH3C(data);
+                        const campaign = await H3Map.parseH3C(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
                         showH3CPreview(preview, campaign, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
@@ -1315,14 +1325,14 @@ self.onmessage = async function(e) {
                 const ext = file.ext || file.name.split('.').pop().toLowerCase();
                 if (ext === 'h3c') {
                     try {
-                        const campaign = await H3Map.parseH3C(data);
+                        const campaign = await H3Map.parseH3C(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
                         showH3CPreview(preview, campaign, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
                     }
                 } else {
                     try {
-                        const mapData = H3Map.parseH3M(data);
+                        const mapData = H3Map.parseH3M(data, { encoding: state.mapEncoding !== 'auto' ? state.mapEncoding : null });
                         showH3MPreview(preview, mapData, file.name, data);
                     } catch (e) {
                         showMapPreviewFallback(preview, file.name, data, e);
@@ -2065,20 +2075,52 @@ self.onmessage = async function(e) {
         return 'windows-1252';
     }
 
-    function buildEncodingSelectHtml(detectedEnc) {
+    function buildEncodingSelectHtml(detectedEnc, currentVal, selectId = 'text-encoding-select') {
         const opts = [
             ['auto',          `Auto (${detectedEnc})`],
+            // Unicode
             ['utf-8',         'UTF-8'],
-            ['windows-1250',  'CP1250 – Central EU'],
-            ['windows-1251',  'CP1251 – Cyrillic'],
+            // Western European
             ['windows-1252',  'CP1252 – Western EU'],
-            ['iso-8859-1',    'ISO-8859-1'],
-            ['iso-8859-2',    'ISO-8859-2'],
-            ['koi8-r',        'KOI8-R'],
+            ['iso-8859-1',    'ISO-8859-1 – Latin-1'],
+            ['iso-8859-15',   'ISO-8859-15 – Latin-9 (€)'],
+            // Central European
+            ['windows-1250',  'CP1250 – Central EU'],
+            ['iso-8859-2',    'ISO-8859-2 – Central EU'],
+            // Cyrillic
+            ['windows-1251',  'CP1251 – Cyrillic'],
+            ['koi8-r',        'KOI8-R – Russian'],
+            ['koi8-u',        'KOI8-U – Ukrainian'],
+            ['iso-8859-5',    'ISO-8859-5 – Cyrillic'],
+            // Greek
+            ['windows-1253',  'CP1253 – Greek'],
+            ['iso-8859-7',    'ISO-8859-7 – Greek'],
+            // Turkish
+            ['windows-1254',  'CP1254 – Turkish'],
+            ['iso-8859-9',    'ISO-8859-9 – Turkish'],
+            // Baltic
+            ['windows-1257',  'CP1257 – Baltic'],
+            ['iso-8859-4',    'ISO-8859-4 – Baltic'],
+            // Vietnamese
+            ['windows-1258',  'CP1258 – Vietnamese'],
+            // Arabic
+            ['windows-1256',  'CP1256 – Arabic'],
+            ['iso-8859-6',    'ISO-8859-6 – Arabic'],
+            // Hebrew
+            ['windows-1255',  'CP1255 – Hebrew'],
+            ['iso-8859-8',    'ISO-8859-8 – Hebrew'],
+            // CJK
+            ['shift-jis',     'Shift-JIS – Japanese'],
+            ['euc-jp',        'EUC-JP – Japanese'],
+            ['gbk',           'GBK / GB18030 – Chinese Simplified'],
+            ['big5',          'Big5 – Chinese Traditional'],
+            ['euc-kr',        'EUC-KR – Korean'],
+            // Other Latin
+            ['iso-8859-3',    'ISO-8859-3 – South EU'],
         ];
-        return `<select id="text-encoding-select" title="Text encoding">${
+        return `<select id="${selectId}" title="Text encoding">${
             opts.map(([v, l]) =>
-                `<option value="${v}"${state.textEncoding === v ? ' selected' : ''}>${escapeHtml(l)}</option>`
+                `<option value="${v}"${currentVal === v ? ' selected' : ''}>${escapeHtml(l)}</option>`
             ).join('')
         }</select>`;
     }
@@ -2104,7 +2146,7 @@ self.onmessage = async function(e) {
                         <span>${formatSize(data.length)}</span>
                     </div>
                     <div class="preview-toolbar">
-                        ${buildEncodingSelectHtml(detectedEnc)}
+                        ${buildEncodingSelectHtml(detectedEnc, state.textEncoding)}
                         <button id="text-hash-btn" title="Show file hashes"># Hash</button>
                         <button id="text-save-btn" title="Save file">💾</button>
                     </div>
@@ -2724,6 +2766,8 @@ self.onmessage = async function(e) {
     }
 
     function showH3MPreview(container, map, filename, rawData) {
+        const detectedMapEnc = map._rawStringBytes?.length
+            ? detectEncoding(map._rawStringBytes) : 'utf-8';
         const sizeLabel = `${map.mapSize}×${map.mapSize}`;
         const ugLabel = map.hasUnderground ? ' + Underground' : '';
         const levels = map.hasUnderground ? 2 : 1;
@@ -2862,6 +2906,26 @@ self.onmessage = async function(e) {
             artifactChartHtml = `<div class="map-section"><h3 class="map-section-title">Artifacts by Type</h3>${renderBarChart(entries)}</div>`;
         }
 
+        // Specific artifact list (artifacts with known names + position + trigger info)
+        let artifactListHtml = '';
+        if (map.stats?.artifacts?.length > 0) {
+            const specificArts = map.stats.artifacts.filter(a =>
+                a.objClass === H3Map.getObjectClassName ? true : true // include all tracked artifacts
+            );
+            if (specificArts.length > 0) {
+                const rows = specificArts.map(a => {
+                    const name = H3Map.getArtifactName(a);
+                    const pos = `(${a.x},${a.y}${a.z ? ',U' : ''})`;
+                    let trigger = '';
+                    if (a.message && a.hasGuard) trigger = '⚔️ Guard+Msg';
+                    else if (a.hasGuard) trigger = '⚔️ Guard';
+                    else if (a.message) trigger = '💬 Message';
+                    return `<tr><td>${escapeHtml(name)}</td><td class="art-pos">${pos}</td><td>${trigger}</td></tr>`;
+                }).join('');
+                artifactListHtml = `<div class="map-section"><h3 class="map-section-title">Artifacts on Map</h3><div class="map-artifact-list-wrap"><table class="map-artifact-table"><thead><tr><th>Artifact</th><th>Position</th><th>Trigger</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+            }
+        }
+
         // Resources on map
         let resourcesHtml = '';
         if (map.stats?.resourcesOnMap && Object.keys(map.stats.resourcesOnMap).length > 0) {
@@ -2941,8 +3005,50 @@ self.onmessage = async function(e) {
         // Events
         let eventsHtml = '';
         if (map.events?.length > 0) {
+            const RES_NAMES = ['Wood', 'Mercury', 'Ore', 'Sulfur', 'Crystal', 'Gems', 'Gold'];
+            const evItems = map.events.slice(0, 30).map(ev => {
+                let detail = `Day ${ev.firstOccurrence + 1}${ev.nextOccurrence > 0 ? ` (every ${ev.nextOccurrence} days)` : ''}`;
+                if (ev.resources) {
+                    const grants = ev.resources.map((v, i) => v !== 0 ? `${v > 0 ? '+' : ''}${v} ${RES_NAMES[i]}` : null).filter(Boolean);
+                    if (grants.length) detail += ` · ${grants.join(', ')}`;
+                }
+                if (ev.message) {
+                    const excerpt = ev.message.length > 60 ? ev.message.slice(0, 57).replace(/\s+\S*$/, '') + '…' : ev.message;
+                    detail += ` · "${escapeHtml(excerpt)}"`;
+                }
+                return `<div class="map-event-item"><strong>${escapeHtml(ev.name)}</strong> — ${detail}</div>`;
+            }).join('');
             eventsHtml = `<div class="map-section"><h3 class="map-section-title">Timed Events (${map.events.length})</h3>
-                <div class="map-events-list">${map.events.slice(0, 20).map(ev => `<div class="map-event-item"><strong>${escapeHtml(ev.name)}</strong> — Day ${ev.firstOccurrence + 1}${ev.nextOccurrence > 0 ? ` (every ${ev.nextOccurrence} days)` : ''}</div>`).join('')}${map.events.length > 20 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.events.length - 20} more</div>` : ''}</div></div>`;
+                <div class="map-events-list">${evItems}${map.events.length > 30 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.events.length - 30} more</div>` : ''}</div></div>`;
+        }
+
+        // Quests (Seer Huts + Quest Guards with mission data)
+        let questsHtml = '';
+        if (map.stats?.quests?.length > 0) {
+            const PRIMARY_SKILLS = ['Attack', 'Defense', 'Spell Power', 'Knowledge'];
+            const RES_NAMES = ['Wood', 'Mercury', 'Ore', 'Sulfur', 'Crystal', 'Gems', 'Gold'];
+            const questItems = map.stats.quests.slice(0, 50).map(qe => {
+                const q = qe.quest;
+                let desc = q.typeName || 'Quest';
+                if (qe.quest.missionType === 1 && q.level != null) desc += ` ${q.level}`;
+                if (qe.quest.missionType === 2 && q.primarySkills) {
+                    desc += ': ' + q.primarySkills.map((v, i) => v ? `${PRIMARY_SKILLS[i]} ${v}` : null).filter(Boolean).join(', ');
+                }
+                if (qe.quest.missionType === 5 && q.artifacts?.length) {
+                    const names = q.artifacts.map(id => (H3Map.ARTIFACT_NAMES[id] || `Art #${id}`));
+                    desc += ': ' + names.join(', ');
+                }
+                if (qe.quest.missionType === 7 && q.resources) {
+                    const res = q.resources.map((v, i) => v ? `${v} ${RES_NAMES[i]}` : null).filter(Boolean);
+                    desc += ': ' + res.join(', ');
+                }
+                const posLabel = `(${qe.x},${qe.y}${qe.z ? ',u' : ''})`;
+                const reward = q.firstVisitText ? ` · "${escapeHtml(q.firstVisitText.length > 50 ? q.firstVisitText.slice(0, 47) + '…' : q.firstVisitText)}"` : '';
+                const deadline = q.deadline != null ? ` · deadline day ${q.deadline + 1}` : '';
+                return `<div class="map-event-item"><strong>${escapeHtml(qe.type)}</strong> ${posLabel} — ${escapeHtml(desc)}${deadline}${reward}</div>`;
+            }).join('');
+            questsHtml = `<div class="map-section"><h3 class="map-section-title">Quests (${map.stats.quests.length})</h3>
+                <div class="map-events-list">${questItems}${map.stats.quests.length > 50 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.stats.quests.length - 50} more</div>` : ''}</div></div>`;
         }
 
         container.innerHTML = `
@@ -2956,6 +3062,7 @@ self.onmessage = async function(e) {
                     </div>
                     <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
                     <div class="preview-toolbar">
+                        ${map._rawStringBytes?.length ? buildEncodingSelectHtml(detectedMapEnc, state.mapEncoding, 'map-encoding-select') : ''}
                         ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
                         ${rawData ? `<button title="Export original" id="map-export-btn">💾 H3M</button>` : ''}
                     </div>
@@ -2992,12 +3099,14 @@ self.onmessage = async function(e) {
                         ${factionChartHtml}
                         ${monsterChartHtml}
                         ${artifactChartHtml}
+                        ${artifactListHtml}
                         ${resourcesHtml}
                         ${keyLocationsHtml}
                         ${extKeyLocationsHtml}
                         ${topObjectsHtml}
                         ${rumorsHtml}
                         ${eventsHtml}
+                        ${questsHtml}
                     </div>
                 </div>
             </div>
@@ -3019,6 +3128,16 @@ self.onmessage = async function(e) {
         // Event handlers
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
             container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        container.querySelector('#map-encoding-select')?.addEventListener('change', (e) => {
+            state.mapEncoding = e.target.value;
+            if (rawData) {
+                const enc = state.mapEncoding === 'auto' ? null : state.mapEncoding;
+                try {
+                    const reparsed = H3Map.parseH3M(rawData, { encoding: enc });
+                    showH3MPreview(container, reparsed, filename, rawData);
+                } catch { /* ignore parse errors on encoding switch */ }
+            }
+        });
         const hashBtn = container.querySelector('#map-hash-btn');
         if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, 'H3M Map', rawData));
         const exportBtn = container.querySelector('#map-export-btn');
@@ -3026,6 +3145,8 @@ self.onmessage = async function(e) {
     }
 
     function showH3CPreview(container, campaign, filename, rawData) {
+        const detectedMapEnc = campaign._rawStringBytes?.length
+            ? detectEncoding(campaign._rawStringBytes) : 'utf-8';
         // Aggregate stats from all parsed maps
         let totalArea = 0, totalObjects = 0, totalTowns = 0, totalMonsters = 0;
         const allFactions = {};
@@ -3125,6 +3246,7 @@ self.onmessage = async function(e) {
                     </div>
                     <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
                     <div class="preview-toolbar">
+                        ${campaign._rawStringBytes?.length ? buildEncodingSelectHtml(detectedMapEnc, state.mapEncoding, 'map-encoding-select') : ''}
                         ${rawData ? `<button title="Show file hashes" id="map-hash-btn"># Hash</button>` : ''}
                         ${rawData ? `<button title="Export original" id="map-export-btn">💾 H3C</button>` : ''}
                     </div>
@@ -3169,6 +3291,16 @@ self.onmessage = async function(e) {
         // Event handlers
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
             container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        container.querySelector('#map-encoding-select')?.addEventListener('change', async (e) => {
+            state.mapEncoding = e.target.value;
+            if (rawData) {
+                const enc = state.mapEncoding === 'auto' ? null : state.mapEncoding;
+                try {
+                    const reparsed = await H3Map.parseH3C(rawData, { encoding: enc });
+                    showH3CPreview(container, reparsed, filename, rawData);
+                } catch { /* ignore parse errors on encoding switch */ }
+            }
+        });
         const hashBtn = container.querySelector('#map-hash-btn');
         if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, 'H3C Campaign', rawData));
         const exportBtn = container.querySelector('#map-export-btn');
@@ -5216,6 +5348,7 @@ self.onmessage = async function(e) {
             if (state.activeVideoCleanup) { state.activeVideoCleanup(); state.activeVideoCleanup = null; }
             state.lastTextData = null;
             state.textEncoding = 'auto';
+            state.mapEncoding = 'auto';
             updateArchiveSelector();
             setMode('explorer');
         });

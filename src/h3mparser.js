@@ -15,13 +15,24 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     // Binary reader helper
     // ----------------------------------------------------------------
+    // Merge an array of Uint8Arrays into a single Uint8Array
+    function mergeUint8Arrays(arrays) {
+        const total = arrays.reduce((n, a) => n + a.length, 0);
+        const out = new Uint8Array(total);
+        let off = 0;
+        for (const a of arrays) { out.set(a, off); off += a.length; }
+        return out;
+    }
+
     class BinaryReader {
-        constructor(data) {
+        constructor(data, options) {
             const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
             this.data = u8;
             this.view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
             this.pos = 0;
             this.length = u8.byteLength;
+            this.encoding = options?.encoding || null;    // null = auto (UTF-8 → latin1)
+            this.rawStrings = options?.rawStrings || null; // Array to collect raw string bytes
         }
         u8()  { const v = this.view.getUint8(this.pos); this.pos += 1; return v; }
         i8()  { const v = this.view.getInt8(this.pos); this.pos += 1; return v; }
@@ -38,10 +49,15 @@ const H3Map = (() => {
             if (len > 500000 || this.pos + len > this.length) throw new Error(`Invalid string length ${len} at offset ${this.pos - 4}`);
             const bytes = this.data.subarray(this.pos, this.pos + len);
             this.pos += len;
-            // Attempt UTF-8 first, fall back to latin1
+            // Collect raw bytes for encoding detection
+            if (this.rawStrings !== null) this.rawStrings.push(new Uint8Array(bytes));
+            // Use specified encoding if provided
+            if (this.encoding) {
+                return new TextDecoder(this.encoding, { fatal: false }).decode(bytes);
+            }
+            // Auto-detect: attempt UTF-8 first, fall back to latin1
             try {
-                const s = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-                return s;
+                return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
             } catch {
                 return new TextDecoder('latin1').decode(bytes);
             }
@@ -209,6 +225,125 @@ const H3Map = (() => {
     ];
 
     const SECONDARY_SKILL_LEVELS = ['None', 'Basic', 'Advanced', 'Expert'];
+
+    // Artifact names indexed by artifact ID (objSubID for specific artifacts)
+    const ARTIFACT_NAMES = [
+        // 0-6: Special / war machines
+        'Spellbook', 'Spell Scroll', 'Grail', 'Catapult', 'Ballista', 'Ammo Cart', 'First Aid Tent',
+        // 7-12: Weapons
+        "Centaur's Axe", 'Blackshard of the Dead Knight', "Greater Gnoll's Flail",
+        "Ogre's Club of Havoc", 'Sword of Hellfire', "Titan's Gladius",
+        // 13-18: Shields
+        'Shield of the Dwarven Lords', 'Shield of the Yawning Dead', "Buckler of the Gnoll King",
+        'Targ of the Rampaging Ogre', 'Shield of the Damned', "Sentinel's Shield",
+        // 19-24: Helmets
+        'Helm of the Alabaster Unicorn', 'Skull Helmet', 'Helm of Chaos',
+        'Crown of the Supreme Magi', 'Hellstorm Helmet', 'Thunder Helmet',
+        // 25-30: Armor
+        'Breastplate of Petrified Wood', 'Rib Cage', 'Scales of the Greater Basilisk',
+        'Tunic of the Cyclops King', 'Breastplate of Brimstone', "Titan's Cuirass",
+        // 31-36: Combinations
+        'Armor of Wonder', 'Sandals of the Saint', 'Celestial Necklace of Bliss',
+        "Lion's Shield of Courage", 'Sword of Judgement', 'Helm of Heavenly Enlightenment',
+        // 37-44: Dragon
+        'Quiet Eye of the Dragon', 'Red Dragon Flame Tongue', 'Dragon Scale Shield',
+        'Dragon Scale Armor', 'Dragonbone Greaves', 'Dragon Wing Tabard',
+        'Necklace of Dragonteeth', 'Crown of Dragontooth',
+        // 45-53: Luck/misc
+        'Still Eye of the Dragon', 'Clover of Fortune', 'Cards of Prophecy', 'Ladybird of Luck',
+        'Badge of Courage', 'Crest of Valor', 'Glyph of Gallantry', 'Speculum', 'Spyglass',
+        // 54-59: Undead/neutrality
+        'Amulet of the Undertaker', "Vampire's Cowl", "Dead Man's Boots",
+        'Garniture of Interference', 'Surcoat of Counterpoise', 'Boots of Polarity',
+        // 60-65: Ranged/sight
+        'Bow of Elven Cherrywood', "Bowstring of the Unicorn's Mane", 'Angel Feather Arrows',
+        'Bird of Perception', 'Stoic Watchman', 'Emblem of Cognizance',
+        // 66-71: Diplomacy/movement
+        "Statesman's Medal", "Diplomat's Ring", "Ambassador's Sash",
+        'Ring of the Wayfarer', "Equestrian's Gloves", 'Necklace of Ocean Guidance',
+        // 72-78: Magic power
+        'Angel Wings', 'Charm of Mana', 'Talisman of Mana', 'Mystic Orb of Mana',
+        'Collar of Conjuring', 'Ring of Conjuring', 'Cape of Conjuring',
+        // 79-82: Elemental orbs
+        'Orb of the Firmament', 'Orb of Silt', 'Orb of Tempestuous Fire', 'Orb of Driving Rain',
+        // 83-89: Magic control / tomes
+        "Recanter's Cloak", 'Spirit of Oppression', 'Hourglass of the Evil Hour',
+        'Tome of Fire Magic', 'Tome of Air Magic', 'Tome of Water Magic', 'Tome of Earth Magic',
+        // 90-97: Speed / protection / resources
+        'Boots of Levitation', 'Golden Bow', 'Sphere of Permanence', 'Orb of Vulnerability',
+        'Ring of Vitality', 'Ring of Life', 'Vial of Lifeblood', 'Necklace of Swiftness',
+        // 98-108: Speed / pendants
+        'Boots of Speed', 'Cape of Velocity', 'Pendant of Dispassion', 'Pendant of Second Sight',
+        'Pendant of Holiness', 'Pendant of Life', 'Pendant of Death', 'Pendant of Free Will',
+        'Pendant of Negativity', 'Pendant of Total Recall', 'Pendant of Courage',
+        // 109-117: Resource generators
+        'Everflowing Crystal Cloak', 'Ring of Infinite Gems', 'Everpouring Vial of Mercury',
+        'Inexhaustible Cart of Ore', 'Eversmoking Ring of Sulfur', 'Inexhaustible Cart of Lumber',
+        'Endless Sack of Gold', 'Endless Bag of Gold', 'Endless Purse of Gold',
+        // 118-122: Legion set
+        'Legs of Legion', 'Loins of Legion', 'Torso of Legion', 'Arms of Legion', 'Head of Legion',
+        // 123-126: Naval / special
+        "Sea Captain's Hat", "Spellbinder's Hat", 'Shackles of War', 'Orb of Inhibition',
+        // 127-128: Armageddon's Blade artifacts (AB)
+        'Vial of Dragon Blood', "Armageddon's Blade",
+        // 129-140: Combination artifacts (SoD)
+        'Angelic Alliance', 'Cloak of the Undead King', 'Elixir of Life', 'Armor of the Damned',
+        'Statue of Legion', 'Power of the Dragon Father', "Titan's Thunder", "Admiral's Hat",
+        'Bow of the Sharpshooter', "Wizard's Well", 'Ring of the Magi', 'Cornucopia',
+        // 141-143: Base game unused / HotA combination artifacts
+        "Diplomat's Suit",     // 141 (base game unusedArtifact1)
+        "Diplomat's Cloak",    // 142 (HotA combo: overrides base "Mired in Neutrality")
+        'Pendant of Reflection', // 143 (HotA combo: overrides base "Ironfist of the Ogre")
+        // 144-165: HotA-only artifacts
+        'Ironfist of the Ogre', // 144 (HotA combo)
+        undefined,              // 145 (unknown HotA artifact)
+        undefined,              // 146 (unknown HotA artifact)
+        'Trident of Dominion',  // 147
+        'Shield of Naval Glory', // 148
+        'Royal Armor of Nix',   // 149
+        'Crown of the Five Seas', // 150
+        "Wayfarer's Boots",     // 151
+        'Runes of Imminency',   // 152
+        "Demon's Horseshoe",    // 153
+        "Shaman's Puppet",      // 154
+        'Hideous Mask',         // 155
+        'Ring of Suppression',  // 156
+        'Pendant of Downfall',  // 157
+        'Ring of Oblivion',     // 158
+        'Cape of Silence',      // 159
+        'Golden Goose',         // 160 (HotA combo)
+        'Horn of the Abyss',    // 161
+        'Charm of Eclipse',     // 162
+        'Seal of Sunset',       // 163
+        'Plate of Dying Light', // 164
+        'Sleepkeeper',          // 165
+    ];
+
+    // Spell names indexed by spell ID
+    const SPELL_NAMES = [
+        // 0-9: Adventure map spells
+        'Summon Boat', 'Scuttle Boat', 'Visions', 'View Earth', 'Disguise',
+        'View Air', 'Fly', 'Water Walk', 'Dimension Door', 'Town Portal',
+        // 10-26: Offensive combat spells
+        'Quicksand', 'Land Mine', 'Force Field', 'Fire Wall', 'Earthquake',
+        'Magic Arrow', 'Ice Bolt', 'Lightning Bolt', 'Implosion', 'Chain Lightning',
+        'Frost Ring', 'Fireball', 'Inferno', 'Meteor Shower', 'Death Ripple',
+        'Destroy Undead', 'Armageddon',
+        // 27-36: Defensive / buff
+        'Shield', 'Air Shield', 'Fire Shield', 'Protection from Air', 'Protection from Fire',
+        'Protection from Water', 'Protection from Earth', 'Anti-Magic', 'Dispel', 'Magic Mirror',
+        // 37-48: Healing / summoning
+        'Cure', 'Resurrection', 'Animate Dead', 'Sacrifice', 'Bless', 'Curse',
+        'Bloodlust', 'Precision', 'Weakness', 'Stone Skin', 'Disrupting Ray', 'Prayer',
+        // 49-57: Morale / speed / control
+        'Mirth', 'Sorrow', 'Fortune', 'Misfortune', 'Haste', 'Slow', 'Slayer', 'Frenzy',
+        "Titan's Lightning Bolt",
+        // 58-65: Control
+        'Counterstrike', 'Berserk', 'Hypnotize', 'Forgetfulness', 'Blind', 'Teleport',
+        'Remove Obstacle', 'Clone',
+        // 66-69: Elemental summons
+        'Summon Fire Elemental', 'Summon Earth Elemental', 'Summon Water Elemental', 'Summon Air Elemental',
+    ];
 
     // Object class IDs
     const OBJ = {
@@ -419,7 +554,8 @@ const H3Map = (() => {
         } catch (e) {
             throw new Error('Failed to decompress H3M: ' + e.message);
         }
-        const r = new BinaryReader(data);
+        const rawStrings = [];
+        const r = new BinaryReader(data, { encoding: opts.encoding || null, rawStrings });
         const map = {};
         map._rawCompressedSize = rawData.length;
         map._rawDecompressedSize = data.length;
@@ -637,6 +773,7 @@ const H3Map = (() => {
 
         // Compute statistics
         map.stats = computeStatistics(map);
+        map._rawStringBytes = rawStrings.length > 0 ? mergeUint8Arrays(rawStrings) : new Uint8Array(0);
 
         return map;
     }
@@ -1808,64 +1945,94 @@ const H3Map = (() => {
 
     // ----------------------------------------------------------------
     // Quest
-    // Returns missionType (0 = NONE)
+    // Returns missionType (0 = NONE).  Saves parsed data into obj.quest if obj != null.
     // ----------------------------------------------------------------
+    const QUEST_TYPE_NAMES = [
+        'None', 'Reach Level', 'Primary Skills', 'Defeat Hero', 'Defeat Monster',
+        'Return with Artifacts', 'Return with Creatures', 'Return with Resources',
+        'Be a Specific Hero', 'Belong to Player',
+    ];
+
     function readQuest(r, feat, obj) {
         const missionType = r.u8();
+        if (missionType === 0) return 0; // NONE — no further data
+
+        const quest = obj ? {} : null;
+        if (quest) {
+            quest.missionType = missionType;
+            quest.typeName = QUEST_TYPE_NAMES[missionType] || (missionType === 10 ? 'HotA Special' : `Type ${missionType}`);
+        }
+
         switch (missionType) {
-            case 0: return 0; // NONE — no further data
-            case 1: r.u32(); break; // level
-            case 2: r.skip(4); break; // primary skills (4 × u8 = 4 bytes total)
-            case 3: r.u32(); break; // defeat hero — questIdentifier
-            case 4: r.u32(); break; // defeat monster — questIdentifier
+            case 1: { const lvl = r.u32(); if (quest) quest.level = lvl; break; } // level
+            case 2: { // primary skills
+                if (quest) quest.primarySkills = [r.u8(), r.u8(), r.u8(), r.u8()];
+                else r.skip(4);
+                break;
+            }
+            case 3: { const qi = r.u32(); if (quest) quest.questIdentifier = qi; break; } // defeat hero
+            case 4: { const qi = r.u32(); if (quest) quest.questIdentifier = qi; break; } // defeat monster
             case 5: { // artifacts
                 const cnt = r.u8();
+                const arts = [];
                 for (let i = 0; i < cnt; i++) {
-                    readArtifactId(r, feat);
+                    const artId = readArtifactId(r, feat);
                     if (feat.isHOTA && feat.hotaSub >= 5) r.u16(); // spell scroll ID
+                    if (quest) arts.push(artId);
                 }
+                if (quest) quest.artifacts = arts;
                 break;
             }
             case 6: { // creatures
                 const cnt = r.u8();
+                const creatures = [];
                 for (let i = 0; i < cnt; i++) {
-                    if (feat.isROE) r.skip(1); else r.skip(2); // creature ID
-                    r.u16(); // amount
+                    const creId = feat.isROE ? r.u8() : r.u16();
+                    const amount = r.u16();
+                    if (quest) creatures.push({ creatureId: creId, amount });
                 }
+                if (quest) quest.creatures = creatures;
                 break;
             }
             case 7: { // resources
-                for (let i = 0; i < 7; i++) r.u32();
+                const res = [];
+                for (let i = 0; i < 7; i++) res.push(r.u32());
+                if (quest) quest.resources = res;
                 break;
             }
-            case 8: r.skip(1); break; // hero
-            case 9: r.skip(1); break; // player
+            case 8: { const heroId = r.u8(); if (quest) quest.heroId = heroId; break; }
+            case 9: { const player = r.u8(); if (quest) quest.player = player; break; }
             case 10: { // HOTA_MULTI
                 const missionSubID = r.u32();
+                if (quest) quest.missionSubID = missionSubID;
                 if (missionSubID === 0) {
-                    // HOTA_HERO_CLASS — sized bitmask
                     const classesCount = r.u32();
-                    const classesBytes = Math.ceil(classesCount / 8);
-                    r.skip(classesBytes);
+                    r.skip(Math.ceil(classesCount / 8));
+                    if (quest) quest.typeName = 'Specific Hero Class';
                 } else if (missionSubID === 1) {
-                    // HOTA_REACH_DATE
-                    r.u32(); // daysPassed
+                    const days = r.u32();
+                    if (quest) { quest.daysPassed = days; quest.typeName = 'Reach Date'; }
                 } else if (missionSubID === 2) {
-                    // HOTA_GAME_DIFFICULTY
-                    r.u32(); // difficultyMask
+                    const mask = r.u32();
+                    if (quest) { quest.difficultyMask = mask; quest.typeName = 'Game Difficulty'; }
                 } else if (missionSubID === 3) {
-                    // HOTA_SCRIPTED
-                    r.u32(); // scriptID
-                    r.bool(); // unknown
+                    r.u32(); r.bool();
+                    if (quest) quest.typeName = 'Scripted';
                 }
                 break;
             }
         }
         // After mission data: deadline + 3 strings
-        r.u32(); // lastDay / deadline
-        r.str(); // firstVisitText
+        const deadline = r.u32();
+        const firstVisitText = r.str();
         r.str(); // nextVisitText
-        r.str(); // completedText
+        const completedText = r.str();
+        if (quest) {
+            quest.deadline = deadline === 0xFFFFFFFF ? null : deadline;
+            quest.firstVisitText = firstVisitText;
+            quest.completedText = completedText;
+            obj.quest = quest;
+        }
         return missionType;
     }
 
@@ -1907,8 +2074,8 @@ const H3Map = (() => {
         const hasMessage = r.bool();
         if (hasMessage) {
             obj.message = r.str();
-            const hasGuard = r.bool();
-            if (hasGuard) readCreatureSet(r, feat, 7);
+            obj.hasGuard = r.bool();
+            if (obj.hasGuard) readCreatureSet(r, feat, 7);
             r.skip(4); // padding
         }
         if (obj.objClass === OBJ.SPELL_SCROLL) {
@@ -2112,6 +2279,9 @@ const H3Map = (() => {
             ev.name = r.str();
             ev.message = r.str();
             for (let j = 0; j < 7; j++) r.i32(); // resources
+            const resources = [];
+            for (let j = 0; j < 7; j++) resources.push(r.i32());
+            ev.resources = resources.some(v => v !== 0) ? resources : null;
             ev.players = r.u8();
             if (feat.isSOD || feat.isHOTA) ev.humanAffected = r.u8();
             ev.computerAffected = r.u8();
@@ -2247,8 +2417,8 @@ const H3Map = (() => {
                 }
 
                 // Key locations
-                if (cls === OBJ.SEER_HUT) stats.keyLocations.seerHuts++;
-                else if (cls === OBJ.QUEST_GUARD) stats.keyLocations.questGuards++;
+                if (cls === OBJ.SEER_HUT) { stats.keyLocations.seerHuts++; if (obj.quest) { stats.quests = stats.quests || []; stats.quests.push({ type: 'Seer Hut', x: obj.x, y: obj.y, z: obj.z, quest: obj.quest }); } }
+                else if (cls === OBJ.QUEST_GUARD) { stats.keyLocations.questGuards++; if (obj.quest) { stats.quests = stats.quests || []; stats.quests.push({ type: 'Quest Guard', x: obj.x, y: obj.y, z: obj.z, quest: obj.quest }); } }
                 else if (cls === OBJ.WITCH_HUT) stats.keyLocations.witchHuts++;
                 else if (cls === OBJ.SCHOLAR) stats.keyLocations.scholars++;
                 else if (cls === OBJ.GARRISON || cls === OBJ.GARRISON2) stats.keyLocations.garrisons++;
@@ -2565,42 +2735,59 @@ const H3Map = (() => {
     // ----------------------------------------------------------------
     // H3C Campaign Parser
     // ----------------------------------------------------------------
-    const CAMPAIGN_VERSIONS = {
-        4: 'RoE', 5: 'AB', 6: 'SoD', 7: 'Chronicles', 10: 'HotA',
-    };
+    // Gzip-compressed header format (existing SoD/HotA files): version 4=RoE, 5=AB, 6=SoD, 7=Chronicles, 10=HotA
+    // Raw binary header format (old RoE/AB files, first byte < 0x20): version 1=RoE, 2=AB, 3=SoD, 4=Chronicles, 10=HotA
+    const CAMPAIGN_VERSIONS_GZIP = { 4: 'RoE', 5: 'AB', 6: 'SoD', 7: 'Chronicles', 10: 'HotA' };
+    const CAMPAIGN_VERSIONS_RAW  = { 1: 'RoE', 2: 'AB', 3: 'SoD', 4: 'Chronicles', 10: 'HotA' };
+    // Keep single alias for external compat
+    const CAMPAIGN_VERSIONS = Object.assign({}, CAMPAIGN_VERSIONS_RAW, CAMPAIGN_VERSIONS_GZIP);
 
-    async function parseH3C(rawData) {
-        // H3C files are concatenated gzip blocks.
-        // Block 0 = campaign header (scenario definitions)
-        // Block 1..N = embedded H3M maps (raw H3M binary, not re-compressed)
-
+    async function parseH3C(rawData, opts = {}) {
         const u8 = rawData instanceof Uint8Array ? rawData : new Uint8Array(rawData);
-        const blocks = splitGzipBlocks(u8);
 
-        if (blocks.length === 0) throw new Error('No gzip blocks found in H3C file');
+        // Detect format:
+        //   Gzip-compressed header: file starts with gzip magic 0x1f 0x8b
+        //     → block 0 = compressed header, blocks 1..N = compressed maps
+        //   Raw binary header: file starts with version byte (< 0x20)
+        //     → header is raw bytes starting at offset 0, all gzip blocks = maps
+        const isGzipFormat = u8[0] === 0x1f && u8[1] === 0x8b;
+        const mapBlocks = splitGzipBlocks(u8); // all gzip blocks in the file
 
-        // Decompress all blocks
-        const decompressed = [];
-        for (const block of blocks) {
+        let headerData;
+        let mapBlocksStart;
+        if (isGzipFormat) {
+            if (mapBlocks.length === 0) throw new Error('No gzip blocks found in H3C file');
+            headerData = await decompressAsync(mapBlocks[0]);
+            if (!headerData) throw new Error('Failed to decompress campaign header');
+            mapBlocksStart = 1; // blocks[1..N] are map blocks
+        } else {
+            // Raw binary format: header IS the file data before the first gzip block
+            headerData = u8;
+            mapBlocksStart = 0; // ALL gzip blocks are map blocks
+        }
+
+        // Decompress map blocks
+        const decompressedMaps = [];
+        for (let i = mapBlocksStart; i < mapBlocks.length; i++) {
             try {
-                const dec = await decompressAsync(block);
-                decompressed.push(dec);
+                decompressedMaps.push(await decompressAsync(mapBlocks[i]));
             } catch (e) {
-                decompressed.push(null);
+                decompressedMaps.push(null);
             }
         }
 
-        // Parse campaign header from first block
-        const headerData = decompressed[0];
-        if (!headerData) throw new Error('Failed to decompress campaign header');
-
         const campaign = {};
-        const r = new BinaryReader(headerData);
+        const rawStrings = [];
+        const r = new BinaryReader(headerData, { encoding: opts.encoding || null, rawStrings });
 
         campaign.version = r.u32();
-        campaign.versionName = CAMPAIGN_VERSIONS[campaign.version] || `Unknown (${campaign.version})`;
         const ver = campaign.version;
-        const isHotA = ver === 10;
+        // Normalize raw-format version numbers to gzip-format equivalents for condition checks
+        // Raw: 1=RoE→4, 2=AB→5, 3=SoD→6, 4=Chr→7, 10=HotA→10
+        const normVer = (!isGzipFormat && ver >= 1 && ver <= 4) ? ver + 3 : ver;
+        const versionTable = isGzipFormat ? CAMPAIGN_VERSIONS_GZIP : CAMPAIGN_VERSIONS_RAW;
+        campaign.versionName = versionTable[ver] || `Unknown v${ver}`;
+        const isHotA = normVer === 10;
 
         // HotA-specific header fields
         if (isHotA) {
@@ -2621,21 +2808,27 @@ const H3Map = (() => {
         campaign.name = r.str();
         campaign.description = r.str();
 
-        // Difficulty choice available for all versions > RoE (version > 4)
-        if (ver > 4) {
+        // Difficulty choice available for AB+ (normVer > 4 means AB or newer)
+        if (normVer > 4) {
             campaign.allowDifficultySelection = r.bool();
         }
 
-        campaign.music = r.u8();
+        // Music: present in gzip-format (SoD/HotA) but NOT in raw binary format (RoE v1)
+        if (isGzipFormat) {
+            campaign.music = r.u8();
+        }
 
-        // For non-HotA, determine scenario count from remaining gzip blocks
+        // Scenario count from remaining map blocks (for non-HotA)
         if (!isHotA) {
-            campaign.scenarioCount = blocks.length - 1;
+            campaign.scenarioCount = decompressedMaps.length;
         }
 
         // Parse scenario definitions
         campaign.scenarios = [];
         const sc_count = campaign.scenarioCount;
+        // Raw binary ROE format has minimal scenario info (mapName + packedSize + precond only)
+        // Full metadata (regionColor, difficulty, regionText, prolog/epilog, travel) is only in gzip format
+        const hasScenarioMeta = isGzipFormat;
 
         for (let i = 0; i < sc_count; i++) {
             const sc = { index: i };
@@ -2646,106 +2839,106 @@ const H3Map = (() => {
                 // Preconditions: bitmask (u8 if <=8 scenarios, u16 if >8)
                 sc.preconditions = sc_count > 8 ? r.u16() : r.u8();
 
-                sc.regionColor = r.u8();
-                sc.difficulty = r.u8();
-                sc.difficultyName = DIFFICULTY_NAMES[sc.difficulty] || `Unknown`;
-                sc.regionText = r.str();
+                if (hasScenarioMeta) {
+                    sc.regionColor = r.u8();
+                    sc.difficulty = r.u8();
+                    sc.difficultyName = DIFFICULTY_NAMES[sc.difficulty] || `Unknown`;
+                    sc.regionText = r.str();
 
-                // Prolog
-                sc.prologEnabled = r.bool();
-                if (sc.prologEnabled) {
-                    sc.prologVideo = r.u8();
-                    sc.prologMusic = r.u8();
-                    sc.prologText = r.str();
-                }
-
-                // HotA: prolog2, prolog3
-                if (isHotA) {
-                    if (r.bool()) { r.u8(); r.u8(); r.str(); }
-                    if (r.bool()) { r.u8(); r.u8(); r.str(); }
-                }
-
-                // Epilog
-                sc.epilogEnabled = r.bool();
-                if (sc.epilogEnabled) {
-                    sc.epilogVideo = r.u8();
-                    sc.epilogMusic = r.u8();
-                    sc.epilogText = r.str();
-                }
-
-                // HotA: epilog2, epilog3
-                if (isHotA) {
-                    if (r.bool()) { r.u8(); r.u8(); r.str(); }
-                    if (r.bool()) { r.u8(); r.u8(); r.str(); }
-                }
-
-                // Travel options
-                sc.whatHeroKeeps = r.u8();
-
-                // Creature bitmask
-                const creatureBytes = isHotA ? 24 : 19;
-                r.skip(creatureBytes);
-
-                // Artifact bitmask
-                const artifactBytes = isHotA ? 21 : (ver >= 6 ? 18 : 17);
-                r.skip(artifactBytes);
-
-                sc.startOptions = r.u8();
-
-                if (sc.startOptions === 1) {
-                    sc.bonusPlayerColor = r.u8();
-                }
-
-                if (sc.startOptions !== 0) {
-                    const numBonuses = r.u8();
-                    sc.bonuses = [];
-                    for (let b = 0; b < numBonuses; b++) {
-                        const bonus = {};
-                        if (sc.startOptions === 1) {
-                            bonus.type = r.u8();
-                            switch (bonus.type) {
-                                case 0: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
-                                case 1: bonus.heroId = r.i16(); bonus.creatureId = r.u16(); bonus.amount = r.u16(); break;
-                                case 2: bonus.buildingId = r.u8(); break;
-                                case 3: bonus.heroId = r.i16(); bonus.artifactId = r.u16(); break;
-                                case 4: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
-                                case 5: bonus.heroId = r.i16(); bonus.stats = [r.u8(), r.u8(), r.u8(), r.u8()]; break;
-                                case 6: bonus.heroId = r.i16(); bonus.skillId = r.u8(); bonus.mastery = r.u8(); break;
-                                case 7: bonus.resourceType = r.i8(); bonus.amount = r.i32(); break;
-                            }
-                        } else if (sc.startOptions === 2) {
-                            bonus.playerColor = r.u8();
-                            bonus.scenarioId = r.u8();
-                        } else if (sc.startOptions === 3) {
-                            bonus.playerColor = r.u8();
-                            bonus.heroId = r.i16();
-                        }
-                        sc.bonuses.push(bonus);
+                    // Prolog
+                    sc.prologEnabled = r.bool();
+                    if (sc.prologEnabled) {
+                        sc.prologVideo = r.u8();
+                        sc.prologMusic = r.u8();
+                        sc.prologText = r.str();
                     }
-                }
+
+                    // HotA: prolog2, prolog3
+                    if (isHotA) {
+                        if (r.bool()) { r.u8(); r.u8(); r.str(); }
+                        if (r.bool()) { r.u8(); r.u8(); r.str(); }
+                    }
+
+                    // Epilog
+                    sc.epilogEnabled = r.bool();
+                    if (sc.epilogEnabled) {
+                        sc.epilogVideo = r.u8();
+                        sc.epilogMusic = r.u8();
+                        sc.epilogText = r.str();
+                    }
+
+                    // HotA: epilog2, epilog3
+                    if (isHotA) {
+                        if (r.bool()) { r.u8(); r.u8(); r.str(); }
+                        if (r.bool()) { r.u8(); r.u8(); r.str(); }
+                    }
+
+                    // Travel options
+                    sc.whatHeroKeeps = r.u8();
+
+                    // Creature bitmask
+                    const creatureBytes = isHotA ? 24 : 19;
+                    r.skip(creatureBytes);
+
+                    // Artifact bitmask: HotA=21, SoD+(normVer>=6)=18, RoE/AB=17
+                    const artifactBytes = isHotA ? 21 : (normVer >= 6 ? 18 : 17);
+                    r.skip(artifactBytes);
+
+                    sc.startOptions = r.u8();
+
+                    if (sc.startOptions === 1) {
+                        sc.bonusPlayerColor = r.u8();
+                    }
+
+                    if (sc.startOptions !== 0) {
+                        const numBonuses = r.u8();
+                        sc.bonuses = [];
+                        for (let b = 0; b < numBonuses; b++) {
+                            const bonus = {};
+                            if (sc.startOptions === 1) {
+                                bonus.type = r.u8();
+                                switch (bonus.type) {
+                                    case 0: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
+                                    case 1: bonus.heroId = r.i16(); bonus.creatureId = r.u16(); bonus.amount = r.u16(); break;
+                                    case 2: bonus.buildingId = r.u8(); break;
+                                    case 3: bonus.heroId = r.i16(); bonus.artifactId = r.u16(); break;
+                                    case 4: bonus.heroId = r.i16(); bonus.spellId = r.u8(); break;
+                                    case 5: bonus.heroId = r.i16(); bonus.stats = [r.u8(), r.u8(), r.u8(), r.u8()]; break;
+                                    case 6: bonus.heroId = r.i16(); bonus.skillId = r.u8(); bonus.mastery = r.u8(); break;
+                                    case 7: bonus.resourceType = r.i8(); bonus.amount = r.i32(); break;
+                                }
+                            } else if (sc.startOptions === 2) {
+                                bonus.playerColor = r.u8();
+                                bonus.scenarioId = r.u8();
+                            } else if (sc.startOptions === 3) {
+                                bonus.playerColor = r.u8();
+                                bonus.heroId = r.i16();
+                            }
+                            sc.bonuses.push(bonus);
+                        }
+                    }
+                } // end hasScenarioMeta
             } catch (e) {
                 sc.parseError = e.message;
             }
             campaign.scenarios.push(sc);
         }
 
-        // Embedded H3M maps (blocks 1..N)
+        // Embedded H3M maps
         campaign.maps = [];
         campaign.rawMaps = [];
-        let mapBlockIdx = 1;
+        let mapBlockIdx = 0;
 
         for (let i = 0; i < sc_count; i++) {
             const sc = campaign.scenarios[i];
             const isVoid = !sc.mapName || sc.mapName.length === 0;
 
-            if (!isVoid && mapBlockIdx < blocks.length) {
-                campaign.rawMaps.push(blocks[mapBlockIdx]);
-                const mapDec = decompressed[mapBlockIdx];
+            if (!isVoid && mapBlockIdx < mapBlocks.length - mapBlocksStart) {
+                campaign.rawMaps.push(mapBlocks[mapBlocksStart + mapBlockIdx]);
+                const mapDec = decompressedMaps[mapBlockIdx];
                 if (mapDec) {
                     try {
-                        // Decompressed block is raw H3M binary (not gzip)
-                        // parseH3M's decompress() sees no gzip magic and passes through
-                        const mapData = parseH3M(mapDec);
+                        const mapData = parseH3M(mapDec, { encoding: opts.encoding || null });
                         campaign.maps.push(mapData);
                         sc.mapData = mapData;
                     } catch (e) {
@@ -2763,6 +2956,7 @@ const H3Map = (() => {
 
         campaign._rawCompressedSize = rawData.length;
         campaign.mapCount = campaign.maps.filter(m => m && !m.parseError).length;
+        campaign._rawStringBytes = rawStrings.length > 0 ? mergeUint8Arrays(rawStrings) : new Uint8Array(0);
 
         return campaign;
     }
@@ -2804,6 +2998,26 @@ const H3Map = (() => {
     }
 
     // ----------------------------------------------------------------
+    // Artifact / Spell name helpers
+    // ----------------------------------------------------------------
+    function getArtifactName(obj) {
+        const cls = obj.objClass;
+        if (cls === OBJ.SPELL_SCROLL) {
+            const spellName = (obj.spellId != null && SPELL_NAMES[obj.spellId]) ? SPELL_NAMES[obj.spellId] : `Spell #${obj.spellId}`;
+            return `Spell Scroll: ${spellName}`;
+        }
+        if (cls === OBJ.ARTIFACT) {
+            return ARTIFACT_NAMES[obj.objSubID] || `Artifact #${obj.objSubID}`;
+        }
+        if (cls === OBJ.RANDOM_ART) return 'Random Artifact';
+        if (cls === OBJ.RANDOM_TREASURE) return 'Random Treasure';
+        if (cls === OBJ.RANDOM_MINOR) return 'Random Minor Artifact';
+        if (cls === OBJ.RANDOM_MAJOR) return 'Random Major Artifact';
+        if (cls === OBJ.RANDOM_RELIC) return 'Random Relic';
+        return 'Unknown Artifact';
+    }
+
+    // ----------------------------------------------------------------
     // Public API
     // ----------------------------------------------------------------
     return {
@@ -2821,8 +3035,10 @@ const H3Map = (() => {
         DIFFICULTY_NAMES,
         WIN_COND_NAMES, LOSS_COND_NAMES,
         RESOURCE_NAMES,
+        ARTIFACT_NAMES, SPELL_NAMES,
 
-        // Helper
+        // Helpers
         getObjectClassName,
+        getArtifactName,
     };
 })();

@@ -33,11 +33,12 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.PAC` | Packed resource files |
 | `.D32` | Raw 32-bit RGBA images |
 | `.FNT` | Bitmap fonts (256-glyph indexed format) |
-| `.H3M` | Maps |
-| `.H3C` | Campaigns |
-| `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) |
+| `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) or InstallShield v5 self-extracting archive |
 | `.ISO` | Original CD image (ISO 9660, InstallShield CABs) |
-| `.SIT` | StuffIt archives of the HoMM3 Mac Version |
+| `.H3M` | Heroes of Might and Magic III map file |
+| `.H3C` | Heroes of Might and Magic III campaign file |
+| `.SIT` | StuffIt 5 archive (Mac CD distribution) |
+| `.HFS` / `.TOAST` | HFS disk image (Mac CD image) |
 
 ## Usage
 
@@ -60,6 +61,10 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `isoextract.js` | ISO 9660 + InstallShield CAB extractor (based on unshield) | **LGPL-2.1-or-later** |
 | `lzma2.js` | LZMA2 decompressor (based on 7-Zip SDK by Igor Pavlov) | MIT |
 | `video-decoders.js` | SMK and BIK video decoders (derived from FFmpeg) | **LGPL-2.1-or-later** |
+| `isextract.js` | InstallShield v5 self-extracting EXE decoder | MIT |
+| `sitextract.js` | StuffIt 5 archive extractor (based on The Unarchiver / unar) | **LGPL-2.1-or-later** |
+| `hfsextract.js` | HFS disk image reader | MIT |
+| `h3mparser.js` | H3M / H3C map and campaign parser, minimap renderer | MIT |
 
 ## License
 
