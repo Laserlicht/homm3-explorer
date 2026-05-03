@@ -382,10 +382,11 @@ const H3Map = (() => {
     // Feature Flags per version (what the format supports)
     // ----------------------------------------------------------------
     function features(ver, hotaSub) {
-        const isROE = ver === VERSION.ROE;
-        const isAB  = ver >= VERSION.AB;
-        const isSOD = ver >= VERSION.SOD;
-        const isHOTA = ver >= VERSION.HOTA;
+        const isROE  = ver === VERSION.ROE;
+        const isAB   = ver >= VERSION.AB;
+        const isSOD  = ver >= VERSION.SOD;
+        const isWOG  = ver === VERSION.WOG;   // Wake of Gods (0x33) — SoD format + WOG extras
+        const isHOTA = ver >= VERSION.HOTA && ver < VERSION.WOG; // HotA only (not WOG)
 
         // Hero count depends on HotA sub-version
         let heroCount = isAB ? 156 : 128;
@@ -408,7 +409,7 @@ const H3Map = (() => {
 
         return {
             ver, hotaSub,
-            isROE, isAB, isSOD, isHOTA,
+            isROE, isAB, isSOD, isWOG, isHOTA,
             levelLimit:      isAB,
             creatureId16:    isAB,    // 2-byte creature IDs (vs 1-byte in RoE)
             artifactId16:    isAB,    // 2-byte artifact IDs
