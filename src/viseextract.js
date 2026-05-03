@@ -649,6 +649,13 @@ const VISEExtract = (() => {
         return name.replace(/[/:\\]/g, '_').replace(/\x00/g, '') || 'unnamed';
     }
 
+    /** Returns true if data starts with AIFF/AIFF-C IFF header. */
+    function _isAifc(data) {
+        return data.length >= 12 &&
+            data[0] === 0x46 && data[1] === 0x4F && data[2] === 0x52 && data[3] === 0x4D && // 'FORM'
+            (data[8] === 0x41 && data[9] === 0x49 && data[10] === 0x46); // 'AIF' (AIFF or AIFC)
+    }
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     return {
@@ -665,16 +672,19 @@ const VISEExtract = (() => {
         },
 
         /**
-         * Extract game-relevant files (LOD, SND, VID) from a VISE installer.
-         * Calls onGameFile(name, Uint8Array) for each game file found.
-         * Calls onProgress(done, total, currentName) for progress reporting.
+         * Extract all game-relevant files from a VISE installer:
+         *   - Game archives (LOD, SND, VID)  → onGameFile(name, data)
+         *   - Map files (.h3m, .h3c, .tu)    → onMapFile(name, data)
+         *   - Music files (AIFC, no ext)     → onMusicFile(name, data)
+         * Also calls onProgress(done, total, currentName) for UI updates.
          * @param {Uint8Array} data      — installer data fork
-         * @param {Object}     callbacks — { onGameFile, onProgress }
-         * @returns {Promise<number>}    — number of game files extracted
+         * @param {Object}     callbacks — { onGameFile, onMapFile, onMusicFile, onProgress }
+         * @returns {Promise<{gameFiles:number, mapFiles:number, musicFiles:number}>}
          */
-        async extractGameFiles(data, { onGameFile, onProgress } = {}) {
+        async extractGameFiles(data, { onGameFile, onMapFile, onMusicFile, onProgress } = {}) {
             const GAME_EXTS = new Set(['lod', 'snd', 'vid']);
-            let count = 0;
+            const MAP_EXTS  = new Set(['h3m', 'h3c', 'tu']);
+            let gameFiles = 0, mapFiles = 0, musicFiles = 0;
             await extractAll(data, {
                 onFile(name, fileData) {
                     const ext = name.includes('.')
@@ -682,12 +692,19 @@ const VISEExtract = (() => {
                         : '';
                     if (GAME_EXTS.has(ext)) {
                         if (onGameFile) onGameFile(name, fileData);
-                        count++;
+                        gameFiles++;
+                    } else if (MAP_EXTS.has(ext)) {
+                        if (onMapFile) onMapFile(name, fileData);
+                        mapFiles++;
+                    } else if (!ext && _isAifc(fileData)) {
+                        // AIFC music file with no extension (Mac convention)
+                        if (onMusicFile) onMusicFile(name, fileData);
+                        musicFiles++;
                     }
                 },
                 onProgress,
             });
-            return count;
+            return { gameFiles, mapFiles, musicFiles };
         },
     };
 })();

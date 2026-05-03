@@ -4917,6 +4917,8 @@ self.onmessage = async function(e) {
                                     }
                                     try {
                                         let viseCount = 0;
+                                        const viseMusicFiles = [];
+                                        const viseMapFiles   = [];
                                         await VISEExtract.extractGameFiles(instData, {
                                             onProgress(done, total, name) {
                                                 showLoading(
@@ -4929,8 +4931,34 @@ self.onmessage = async function(e) {
                                                 viseCount++;
                                                 extracted++;
                                             },
+                                            onMapFile(name, fileData) {
+                                                viseMapFiles.push({ name, data: fileData });
+                                            },
+                                            onMusicFile(name, fileData) {
+                                                viseMusicFiles.push({ name, data: fileData });
+                                            },
                                         });
-                                        if (viseCount === 0) {
+                                        if (viseMusicFiles.length > 0) {
+                                            state.archives.set('Music (VISE)', {
+                                                archive: createMp3Archive(viseMusicFiles.map(f => ({
+                                                    name: f.name,
+                                                    extract: async () => decodeAiffcIma4ToWav(f.data) || f.data,
+                                                }))),
+                                                type: 'snd',
+                                                data: null,
+                                            });
+                                        }
+                                        if (viseMapFiles.length > 0) {
+                                            state.archives.set('Maps (VISE)', {
+                                                archive: createMp3Archive(viseMapFiles.map(f => ({
+                                                    name: f.name,
+                                                    extract: async () => f.data,
+                                                }))),
+                                                type: 'maps',
+                                                data: null,
+                                            });
+                                        }
+                                        if (viseCount === 0 && viseMusicFiles.length === 0 && viseMapFiles.length === 0) {
                                             toast(`VISE installer "${hf.name}": no game files found.`, 'warning');
                                         }
                                     } catch (err) {
