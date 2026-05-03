@@ -145,9 +145,11 @@ const H3Map = (() => {
     const TOWN_NAMES_AB  = [...TOWN_NAMES_ROE, 'Conflux'];
     const TOWN_NAMES_HOTA = [...TOWN_NAMES_AB, 'Cove'];
     const TOWN_NAMES_HOTA_FACTORY = [...TOWN_NAMES_HOTA, 'Factory'];
+    const TOWN_NAMES_HOTA_BULWARK = [...TOWN_NAMES_HOTA_FACTORY, 'Bulwark'];
 
     function getTownNames(ver, hotaSub) {
         if (ver >= VERSION.HOTA) {
+            if (hotaSub >= 7) return TOWN_NAMES_HOTA_BULWARK;
             return hotaSub >= 6 ? TOWN_NAMES_HOTA_FACTORY : TOWN_NAMES_HOTA;
         }
         if (ver >= VERSION.AB) return TOWN_NAMES_AB;
@@ -413,7 +415,7 @@ const H3Map = (() => {
             heroCount,
             artifactCount,
             spellCount:      70,
-            townCount:       isHOTA ? (hotaSub >= 6 ? 11 : 10) : (isAB ? 9 : 8),
+            townCount:       isHOTA ? (hotaSub >= 7 ? 12 : hotaSub >= 6 ? 11 : 10) : (isAB ? 9 : 8),
             secondarySkillCount: isHOTA ? 29 : 28,
             hasConflux:      isAB,
             hasCove:         isHOTA,
@@ -2278,7 +2280,6 @@ const H3Map = (() => {
             const ev = {};
             ev.name = r.str();
             ev.message = r.str();
-            for (let j = 0; j < 7; j++) r.i32(); // resources
             const resources = [];
             for (let j = 0; j < 7; j++) resources.push(r.i32());
             ev.resources = resources.some(v => v !== 0) ? resources : null;

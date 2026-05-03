@@ -1173,19 +1173,99 @@ body {
     word-break: break-word;
 }
 
-/* Events */
+/* Events & Quests */
 .map-events-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
 }
 .map-event-item {
-    padding: 4px 10px;
+    padding: 7px 10px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm, 4px);
     font-size: 12px;
     color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.ev-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.ev-name {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 12px;
+}
+.ev-timing, .ev-pos {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.ev-players {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+.ev-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.ev-grants {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 1px;
+}
+.ev-res {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    background: var(--bg-tertiary, #1a1a2e);
+    border: 1px solid var(--border);
+}
+.ev-res.pos { color: #6dbf6d; }
+.ev-res.neg { color: #e07070; }
+.ev-msg {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-left: 2px solid var(--border);
+    padding-left: 6px;
+    margin-top: 1px;
+}
+.h3-yellow {
+    color: #e8c84a;
+    font-style: normal;
+    font-weight: 600;
+}
+#h3m-float-tip .h3-yellow {
+    color: #f0d060;
+}
+.ev-player-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.25);
+    vertical-align: middle;
+    margin-left: 2px;
+}
+.ev-players {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
 }
 
 /* H3C Campaign */

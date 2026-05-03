@@ -116,6 +116,17 @@
         d.textContent = s;
         return d.innerHTML;
     }
+    function escapeAttr(s) {
+        return escapeHtml(s).replace(/"/g, '&quot;');
+    }
+    // Render H3-style text: {title} → yellow span, newlines → <br>
+    function formatH3Text(raw) {
+        // escape HTML first, then apply H3 markup
+        let s = escapeHtml(raw);
+        s = s.replace(/\{([^}]*)\}/g, '<span class="h3-yellow">$1</span>');
+        s = s.replace(/\n/g, '<br>');
+        return s;
+    }
 
     function showLoading(text = 'Loading...', progress = -1) {
         els.loadingOverlay.style.display = 'flex';
@@ -2920,7 +2931,8 @@ self.onmessage = async function(e) {
                     if (a.message && a.hasGuard) trigger = '⚔️ Guard+Msg';
                     else if (a.hasGuard) trigger = '⚔️ Guard';
                     else if (a.message) trigger = '💬 Message';
-                    return `<tr><td>${escapeHtml(name)}</td><td class="art-pos">${pos}</td><td>${trigger}</td></tr>`;
+                    const tipAttr = a.message ? ` data-tip="${escapeAttr(a.message)}"` : '';
+                    return `<tr${tipAttr}><td>${escapeHtml(name)}</td><td class="art-pos">${pos}</td><td>${trigger}</td></tr>`;
                 }).join('');
                 artifactListHtml = `<div class="map-section"><h3 class="map-section-title">Artifacts on Map</h3><div class="map-artifact-list-wrap"><table class="map-artifact-table"><thead><tr><th>Artifact</th><th>Position</th><th>Trigger</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
             }
@@ -2986,7 +2998,7 @@ self.onmessage = async function(e) {
         let rumorsHtml = '';
         if (map.rumors?.length > 0) {
             rumorsHtml = `<div class="map-section"><h3 class="map-section-title">Rumors (${map.rumors.length})</h3>
-                <div class="map-rumors">${map.rumors.map(r => `<div class="map-rumor"><strong>${escapeHtml(r.name)}</strong><p>${escapeHtml(r.text)}</p></div>`).join('')}</div></div>`;
+                <div class="map-rumors">${map.rumors.map(r => `<div class="map-rumor" data-tip="${escapeAttr(r.text)}"><strong>${formatH3Text(r.name)}</strong><p>${formatH3Text(r.text)}</p></div>`).join('')}</div></div>`;
         }
 
         // Win/loss conditions
@@ -3005,50 +3017,80 @@ self.onmessage = async function(e) {
         // Events
         let eventsHtml = '';
         if (map.events?.length > 0) {
-            const RES_NAMES = ['Wood', 'Mercury', 'Ore', 'Sulfur', 'Crystal', 'Gems', 'Gold'];
-            const evItems = map.events.slice(0, 30).map(ev => {
-                let detail = `Day ${ev.firstOccurrence + 1}${ev.nextOccurrence > 0 ? ` (every ${ev.nextOccurrence} days)` : ''}`;
+            const RES_NAMES = H3Map.RESOURCE_NAMES;
+            const MAX_EVENTS = 30;
+            const renderEvItem = (ev) => {
+                const timing = `Day ${ev.firstOccurrence + 1}${ev.nextOccurrence > 0 ? ` · repeats every ${ev.nextOccurrence} days` : ' · one-time'}`;
+                let grantsHtml = '';
                 if (ev.resources) {
-                    const grants = ev.resources.map((v, i) => v !== 0 ? `${v > 0 ? '+' : ''}${v} ${RES_NAMES[i]}` : null).filter(Boolean);
-                    if (grants.length) detail += ` · ${grants.join(', ')}`;
+                    const grants = ev.resources.map((v, i) => v !== 0 ? `<span class="ev-res${v > 0 ? ' pos' : ' neg'}">${v > 0 ? '+' : ''}${v} ${escapeHtml(RES_NAMES[i] || String(i))}</span>` : null).filter(Boolean);
+                    if (grants.length) grantsHtml = `<div class="ev-grants">${grants.join('')}</div>`;
                 }
-                if (ev.message) {
-                    const excerpt = ev.message.length > 60 ? ev.message.slice(0, 57).replace(/\s+\S*$/, '') + '…' : ev.message;
-                    detail += ` · "${escapeHtml(excerpt)}"`;
+                const msgHtml = ev.message
+                    ? `<div class="ev-msg">${formatH3Text(ev.message.length > 120 ? ev.message.slice(0, 117).replace(/\s+\S*$/, '') + '\u2026' : ev.message)}</div>`
+                    : '';
+                const tipAttr = ev.message ? ` data-tip="${escapeAttr(ev.message)}"` : '';
+                const PLAYER_NAMES = ['Red','Blue','Tan','Green','Orange','Purple','Teal','Pink'];
+                const PLAYER_COLORS = ['#c00','#00c','#9b7','#0a0','#f80','#80f','#0cc','#f0a'];
+                let playersHtml = '';
+                if (ev.players != null && ev.players !== 0xFF) {
+                    const dots = PLAYER_NAMES.map((n,i) => (ev.players >> i) & 1
+                        ? `<span class="ev-player-dot" style="background:${PLAYER_COLORS[i]}" title="${n}"></span>` : '').join('');
+                    playersHtml = `<span class="ev-players">${dots}</span>`;
                 }
-                return `<div class="map-event-item"><strong>${escapeHtml(ev.name)}</strong> — ${detail}</div>`;
-            }).join('');
+                return `<div class="map-event-item"${tipAttr}>
+                    <div class="ev-header"><strong class="ev-name">${escapeHtml(ev.name)}</strong><span class="ev-timing">${timing}</span>${playersHtml}</div>
+                    ${grantsHtml}${msgHtml}
+                </div>`;
+            };
+            const evVisible = map.events.slice(0, MAX_EVENTS).map(renderEvItem).join('');
+            const evOverflow = map.events.length > MAX_EVENTS
+                ? `<div id="evts-overflow" style="display:none">${map.events.slice(MAX_EVENTS).map(renderEvItem).join('')}</div><div class="map-event-item map-show-more-btn" data-show-more="evts-overflow" style="color:var(--accent);cursor:pointer;">\u2026and ${map.events.length - MAX_EVENTS} more (click to show)</div>`
+                : '';
             eventsHtml = `<div class="map-section"><h3 class="map-section-title">Timed Events (${map.events.length})</h3>
-                <div class="map-events-list">${evItems}${map.events.length > 30 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.events.length - 30} more</div>` : ''}</div></div>`;
+                <div class="map-events-list">${evVisible}${evOverflow}</div></div>`;
         }
 
         // Quests (Seer Huts + Quest Guards with mission data)
         let questsHtml = '';
         if (map.stats?.quests?.length > 0) {
             const PRIMARY_SKILLS = ['Attack', 'Defense', 'Spell Power', 'Knowledge'];
-            const RES_NAMES = ['Wood', 'Mercury', 'Ore', 'Sulfur', 'Crystal', 'Gems', 'Gold'];
-            const questItems = map.stats.quests.slice(0, 50).map(qe => {
+            const RES_NAMES = H3Map.RESOURCE_NAMES;
+            const MAX_QUESTS = 50;
+            const renderQuestItem = (qe) => {
                 const q = qe.quest;
                 let desc = q.typeName || 'Quest';
-                if (qe.quest.missionType === 1 && q.level != null) desc += ` ${q.level}`;
-                if (qe.quest.missionType === 2 && q.primarySkills) {
+                if (q.missionType === 1 && q.level != null) desc += ` ${q.level}`;
+                if (q.missionType === 2 && q.primarySkills) {
                     desc += ': ' + q.primarySkills.map((v, i) => v ? `${PRIMARY_SKILLS[i]} ${v}` : null).filter(Boolean).join(', ');
                 }
-                if (qe.quest.missionType === 5 && q.artifacts?.length) {
+                if (q.missionType === 5 && q.artifacts?.length) {
                     const names = q.artifacts.map(id => (H3Map.ARTIFACT_NAMES[id] || `Art #${id}`));
                     desc += ': ' + names.join(', ');
                 }
-                if (qe.quest.missionType === 7 && q.resources) {
+                if (q.missionType === 7 && q.resources) {
                     const res = q.resources.map((v, i) => v ? `${v} ${RES_NAMES[i]}` : null).filter(Boolean);
                     desc += ': ' + res.join(', ');
                 }
                 const posLabel = `(${qe.x},${qe.y}${qe.z ? ',u' : ''})`;
-                const reward = q.firstVisitText ? ` · "${escapeHtml(q.firstVisitText.length > 50 ? q.firstVisitText.slice(0, 47) + '…' : q.firstVisitText)}"` : '';
-                const deadline = q.deadline != null ? ` · deadline day ${q.deadline + 1}` : '';
-                return `<div class="map-event-item"><strong>${escapeHtml(qe.type)}</strong> ${posLabel} — ${escapeHtml(desc)}${deadline}${reward}</div>`;
-            }).join('');
+                const tipText = q.firstVisitText || '';
+                const tipAttr = tipText ? ` data-tip="${escapeAttr(tipText)}"` : '';
+                const deadline = q.deadline != null ? `<span class="ev-timing">deadline day ${q.deadline + 1}</span>` : '';
+                const msgHtml = tipText
+                    ? `<div class="ev-msg">${formatH3Text(tipText.length > 120 ? tipText.slice(0, 117).replace(/\s+\S*$/, '') + '\u2026' : tipText)}</div>`
+                    : '';
+                return `<div class="map-event-item"${tipAttr}>
+                    <div class="ev-header"><strong class="ev-name">${escapeHtml(qe.type)}</strong><span class="ev-pos">${posLabel}</span>${deadline}</div>
+                    <div class="ev-desc">${formatH3Text(desc)}</div>
+                    ${msgHtml}
+                </div>`;
+            };
+            const qVisible = map.stats.quests.slice(0, MAX_QUESTS).map(renderQuestItem).join('');
+            const qOverflow = map.stats.quests.length > MAX_QUESTS
+                ? `<div id="quests-overflow" style="display:none">${map.stats.quests.slice(MAX_QUESTS).map(renderQuestItem).join('')}</div><div class="map-event-item map-show-more-btn" data-show-more="quests-overflow" style="color:var(--accent);cursor:pointer;">\u2026and ${map.stats.quests.length - MAX_QUESTS} more (click to show)</div>`
+                : '';
             questsHtml = `<div class="map-section"><h3 class="map-section-title">Quests (${map.stats.quests.length})</h3>
-                <div class="map-events-list">${questItems}${map.stats.quests.length > 50 ? `<div class="map-event-item" style="color:var(--text-muted);">…and ${map.stats.quests.length - 50} more</div>` : ''}</div></div>`;
+                <div class="map-events-list">${qVisible}${qOverflow}</div></div>`;
         }
 
         container.innerHTML = `
@@ -3060,6 +3102,7 @@ self.onmessage = async function(e) {
                         <span>${escapeHtml(map.versionName)}</span>
                         <span>${sizeLabel}${ugLabel}</span>
                     </div>
+                    <div id="h3m-float-tip" style="display:none;position:fixed;max-width:360px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 11px;font-size:12px;line-height:1.5;pointer-events:none;z-index:9999;box-shadow:var(--shadow-lg);word-break:break-word;white-space:pre-wrap;"></div>
                     <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
                     <div class="preview-toolbar">
                         ${map._rawStringBytes?.length ? buildEncodingSelectHtml(detectedMapEnc, state.mapEncoding, 'map-encoding-select') : ''}
@@ -3086,7 +3129,7 @@ self.onmessage = async function(e) {
                             ${map.levelLimit ? `<div class="map-meta-item"><span class="map-meta-label">Level Limit</span><span class="map-meta-value">${map.levelLimit === 0 ? 'None' : map.levelLimit}</span></div>` : ''}
                             ${map.stats?.objectDensity != null ? `<div class="map-meta-item"><span class="map-meta-label">Obj. Density</span><span class="map-meta-value">${map.stats.objectDensity.toFixed(1)}/100 tiles</span></div>` : ''}
                         </div>
-                        ${map.description ? `<p class="map-preview-desc">${escapeHtml(map.description)}</p>` : ''}
+                        ${map.description ? `<p class="map-preview-desc">${formatH3Text(map.description)}</p>` : ''}
                         ${conditionsHtml}
                         ${playerHtml}
                         ${teamHtml}
@@ -3124,6 +3167,34 @@ self.onmessage = async function(e) {
                 }
             }
         }
+
+        // Tooltip for data-tip elements
+        const h3mTipEl = container.querySelector('#h3m-float-tip');
+        const previewFullEl = container.querySelector('.map-preview-full');
+        if (h3mTipEl && previewFullEl) {
+            previewFullEl.addEventListener('mousemove', e => {
+                const el = e.target.closest('[data-tip]');
+                if (el?.dataset.tip) {
+                    h3mTipEl.innerHTML = formatH3Text(el.dataset.tip);
+                    h3mTipEl.style.display = 'block';
+                    const cx = e.clientX + 16, cy = e.clientY + 14;
+                    const tw = h3mTipEl.offsetWidth || 280, th = h3mTipEl.offsetHeight || 60;
+                    h3mTipEl.style.left = (cx + tw > window.innerWidth ? cx - tw - 28 : cx) + 'px';
+                    h3mTipEl.style.top  = (cy + th > window.innerHeight ? cy - th - 24 : cy) + 'px';
+                } else {
+                    h3mTipEl.style.display = 'none';
+                }
+            });
+            previewFullEl.addEventListener('mouseleave', () => { h3mTipEl.style.display = 'none'; });
+        }
+
+        // "…and N more" show-all buttons
+        container.querySelectorAll('.map-show-more-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = container.querySelector('#' + btn.dataset.showMore);
+                if (target) { target.style.display = ''; btn.style.display = 'none'; }
+            });
+        });
 
         // Event handlers
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
@@ -3225,7 +3296,7 @@ self.onmessage = async function(e) {
                             ${bonusHtml}
                         </div>
                     </div>
-                    ${sc.regionText ? `<div class="h3c-scenario-region">${escapeHtml(sc.regionText)}</div>` : ''}
+                    ${sc.regionText ? `<div class="h3c-scenario-region">${formatH3Text(sc.regionText)}</div>` : ''}
                     <div class="h3c-scenario-actions">
                         <button class="h3c-open-map" data-idx="${i}" title="Open this map in H3M viewer">🗺️ Open Map</button>
                         ${campaign.rawMaps?.[i] ? `<button class="h3c-export-map" data-idx="${i}" title="Export as H3M">💾 Export H3M</button>` : ''}
@@ -3266,7 +3337,7 @@ self.onmessage = async function(e) {
                             <div class="map-meta-item"><span class="map-meta-label">File Size</span><span class="map-meta-value">${formatSize(rawData?.length || 0)}</span></div>
                             ${aggHtml}
                         </div>
-                        ${campaign.description ? `<p class="map-preview-desc">${escapeHtml(campaign.description)}</p>` : ''}
+                        ${campaign.description ? `<p class="map-preview-desc">${formatH3Text(campaign.description)}</p>` : ''}
                         ${factionSummaryHtml}
                         ${scenarioHtml}
                     </div>
