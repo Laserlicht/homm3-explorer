@@ -38,7 +38,6 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.H3M` | Heroes of Might and Magic III map file |
 | `.H3C` | Heroes of Might and Magic III campaign file |
 | `.SIT` | StuffIt 5 archive (Mac CD distribution) |
-| `.HFS` / `.TOAST` | HFS disk image (Mac CD image) |
 
 ## Usage
 
