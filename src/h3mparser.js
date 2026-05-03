@@ -214,10 +214,10 @@ const H3Map = (() => {
     const OBJ = {
         TOWN: 98, RANDOM_TOWN: 77,
         HERO: 34, RANDOM_HERO: 70, PRISON: 62,
-        MONSTER: 54, RANDOM_MONSTER: 162, RANDOM_MONSTER_L1: 163,
-        RANDOM_MONSTER_L2: 164, RANDOM_MONSTER_L3: 165,
-        RANDOM_MONSTER_L4: 166, RANDOM_MONSTER_L5: 167,
-        RANDOM_MONSTER_L6: 168, RANDOM_MONSTER_L7: 169,
+        MONSTER: 54, RANDOM_MONSTER: 71, RANDOM_MONSTER_L1: 72,
+        RANDOM_MONSTER_L2: 73, RANDOM_MONSTER_L3: 74,
+        RANDOM_MONSTER_L4: 75, RANDOM_MONSTER_L5: 162,
+        RANDOM_MONSTER_L6: 163, RANDOM_MONSTER_L7: 164,
         MINE: 53,
         GRAIL: 36,
         ARTIFACT: 5, RANDOM_ART: 65, RANDOM_TREASURE: 66,
@@ -225,7 +225,8 @@ const H3Map = (() => {
         PANDORAS_BOX: 6,
         EVENT: 26,
         GARRISON: 33, GARRISON2: 219,
-        SIGN: 91, OCEAN_BOTTLE: 92,
+        SIGN: 91, OCEAN_BOTTLE: 59, SIRENS: 92,
+        LEAN_TO: 39, WAGON: 105, BORDER_GATE: 212,
         SCHOLAR: 81,
         WITCH_HUT: 113,
         QUEST_GUARD: 215,
@@ -2218,7 +2219,10 @@ const H3Map = (() => {
 
     function isMonsterObj(cls) {
         return cls === OBJ.MONSTER || cls === OBJ.RANDOM_MONSTER ||
-            (cls >= OBJ.RANDOM_MONSTER_L1 && cls <= OBJ.RANDOM_MONSTER_L7);
+            cls === OBJ.RANDOM_MONSTER_L1 || cls === OBJ.RANDOM_MONSTER_L2 ||
+            cls === OBJ.RANDOM_MONSTER_L3 || cls === OBJ.RANDOM_MONSTER_L4 ||
+            cls === OBJ.RANDOM_MONSTER_L5 || cls === OBJ.RANDOM_MONSTER_L6 ||
+            cls === OBJ.RANDOM_MONSTER_L7;
     }
 
     function isArtifactObj(cls) {
@@ -2233,12 +2237,16 @@ const H3Map = (() => {
             [OBJ.TOWN]: 'Town', [OBJ.RANDOM_TOWN]: 'Random Town',
             [OBJ.HERO]: 'Hero', [OBJ.RANDOM_HERO]: 'Random Hero', [OBJ.PRISON]: 'Prison',
             [OBJ.MONSTER]: 'Monster', [OBJ.RANDOM_MONSTER]: 'Random Monster',
+            [OBJ.RANDOM_MONSTER_L1]: 'Random Monster (L1)', [OBJ.RANDOM_MONSTER_L2]: 'Random Monster (L2)',
+            [OBJ.RANDOM_MONSTER_L3]: 'Random Monster (L3)', [OBJ.RANDOM_MONSTER_L4]: 'Random Monster (L4)',
+            [OBJ.RANDOM_MONSTER_L5]: 'Random Monster (L5)', [OBJ.RANDOM_MONSTER_L6]: 'Random Monster (L6)',
+            [OBJ.RANDOM_MONSTER_L7]: 'Random Monster (L7)',
             [OBJ.MINE]: 'Mine', [OBJ.GRAIL]: 'Grail',
             [OBJ.ARTIFACT]: 'Artifact', [OBJ.RANDOM_ART]: 'Random Artifact',
             [OBJ.RANDOM_TREASURE]: 'Random Treasure', [OBJ.RANDOM_MINOR]: 'Random Minor Art.',
             [OBJ.RANDOM_MAJOR]: 'Random Major Art.', [OBJ.RANDOM_RELIC]: 'Random Relic',
             [OBJ.PANDORAS_BOX]: "Pandora's Box", [OBJ.EVENT]: 'Event',
-            [OBJ.SIGN]: 'Sign', [OBJ.OCEAN_BOTTLE]: 'Ocean Bottle',
+            [OBJ.SIGN]: 'Sign', [OBJ.OCEAN_BOTTLE]: 'Ocean Bottle', [OBJ.SIRENS]: 'Sirens',
             [OBJ.GARRISON]: 'Garrison', [OBJ.GARRISON2]: 'Garrison',
             [OBJ.SEER_HUT]: 'Seer Hut', [OBJ.WITCH_HUT]: 'Witch Hut',
             [OBJ.SCHOLAR]: 'Scholar', [OBJ.QUEST_GUARD]: 'Quest Guard',
@@ -2252,14 +2260,22 @@ const H3Map = (() => {
             [OBJ.CREATURE_BANK]: 'Creature Bank',
             [OBJ.DWELLING]: 'Dwelling',
             [OBJ.DWELLING_FACTION]: 'Dwelling (faction)',
-            // Special locations (class IDs from H3M / VCMI spec)
+            [OBJ.LEAN_TO]: 'Lean-To',
+            [OBJ.WAGON]: 'Wagon',
+            [OBJ.BORDER_GATE]: 'Border Gate',
+            // Static numeric IDs (VCMI MapObjectBaseID enum)
             2: 'Altar of Sacrifice',
+            3: 'Anchor Point',
             4: 'Arena',
+            7: 'Black Market',
             8: 'Boat',
-            10: 'Buoy',
-            11: 'Campfire',
+            9: 'Border Guard',
+            10: 'Keymaster Tent',
+            11: 'Buoy',
+            12: 'Campfire',
             13: 'Cartographer',
             14: 'Swan Pond',
+            15: 'Cover of Darkness',
             21: 'Cursed Ground',
             22: 'Corpse',
             23: 'Marletto Tower',
@@ -2274,39 +2290,100 @@ const H3Map = (() => {
             35: 'Hill Fort',
             37: 'Hut of Magi',
             38: 'Idol of Fortune',
-            39: 'Lean-To',
             41: 'Library of Enlightenment',
             42: 'Lighthouse',
-            43: 'Learning Stone',
-            45: 'Magic Lantern',
-            46: 'Magic Spring',
+            43: 'Monolith (One-Way In)',
+            44: 'Monolith (One-Way Out)',
+            45: 'Monolith (Two-Way)',
+            46: 'Magic Plains',
+            47: 'School of Magic',
+            48: 'Magic Spring',
             49: 'Magic Well',
+            50: 'Market of Time',
             51: 'Mercenary Camp',
+            52: 'Mermaid',
             55: 'Mystical Garden',
+            56: 'Oasis',
             57: 'Obelisk',
             58: 'Redwood Observatory',
             60: 'Pillar of Fire',
+            61: 'Star Axis',
             63: 'Pyramid',
             64: 'Rally Flag',
             78: 'Refugee Camp',
             80: 'Sanctuary',
+            82: 'Sea Chest',
             84: 'Crypt',
-            85: 'Creature Lair',
-            86: 'Stables',
+            85: 'Shipwreck',
+            86: 'Shipwreck Survivor',
             87: 'Shipyard',
             88: 'Shrine of Magic Incantation',
-            89: 'Tree of Knowledge',
-            90: 'Subterranean Gate',
-            94: 'Trading Post',
+            89: 'Shrine of Magic Gesture',
+            90: 'Shrine of Magic Thought',
+            94: 'Stables',
             95: 'Tavern',
-            96: 'University',
-            100: 'Wagon',
-            103: 'War Machine Factory',
-            104: 'Water Spring',
-            105: 'Water Wheel',
-            106: 'Warrior Tomb',
-            107: 'Whirlpool',
-            108: 'Windmill',
+            96: 'Temple',
+            97: 'Den of Thieves',
+            99: 'Trading Post',
+            100: 'Learning Stone',
+            101: 'Treasure Chest',
+            102: 'Tree of Knowledge',
+            103: 'Subterranean Gate',
+            104: 'University',
+            106: 'War Machine Factory',
+            107: 'School of War',
+            108: 'Warriors Tomb',
+            109: 'Water Wheel',
+            110: 'Watering Hole',
+            111: 'Whirlpool',
+            112: 'Windmill',
+            // Decorations (114–161), VCMI MapObjectBaseID enum
+            114: 'Brush', 115: 'Bush', 116: 'Cactus', 117: 'Canyon', 118: 'Crater',
+            119: 'Dead Vegetation', 120: 'Flowers', 121: 'Frozen Lake', 122: 'Hedge',
+            123: 'Hill', 124: 'Hole', 125: 'Kelp', 126: 'Lake', 127: 'Lava Flow',
+            128: 'Lava Lake', 129: 'Mushrooms', 130: 'Log', 131: 'Mandrake',
+            132: 'Moss', 133: 'Mound', 134: 'Mountain', 135: 'Oak Trees',
+            136: 'Outcropping', 137: 'Pine Trees', 138: 'Plant', 143: 'River Delta',
+            147: 'Rock', 148: 'Sand Dune', 149: 'Sand Pit', 150: 'Shrub',
+            151: 'Skull', 152: 'Stalagmite', 153: 'Stump', 154: 'Tar Pit',
+            155: 'Trees', 156: 'Vine', 157: 'Volcanic Vent', 158: 'Volcano',
+            159: 'Willow Trees', 160: 'Yucca Trees', 161: 'Reef',
+            // IDs 139–142: H3 decorations between Plant(138) and River Delta(143)
+            139: 'Decoration',        // mixed: bones, snow, cactus variants, etc.
+            140: 'Rock Decoration',    // rocks, mountains, ice crystals
+            141: 'Terrain Patch',      // ice/sand zone patches (Zice*, Zsand*)
+            142: 'Water Decoration',   // water edge decorations (avwrhs*)
+            // HotA internal object class IDs (VCMI HOTA_CUSTOM_OBJECT)
+            144: 'HotA Decoration', 145: 'HotA Decoration', 146: 'HotA Decoration',
+            // IDs 165–211: HotA/SoD adventure map decoration objects
+            // (not in VCMI C++ enum; names derived from animation file prefixes)
+            165: 'Decoration', 166: 'Decoration', 167: 'Decoration', 168: 'Decoration',
+            169: 'Decoration', 170: 'Decoration', 171: 'Decoration', 172: 'Decoration',
+            173: 'Decoration', 174: 'Decoration', 175: 'Decoration', 176: 'Decoration',
+            177: 'Lake',                // AVLlk* lake decorations
+            178: 'Decoration', 179: 'Decoration', 180: 'Decoration', 181: 'Decoration',
+            182: 'Decoration', 183: 'Decoration', 184: 'Decoration', 185: 'Decoration',
+            186: 'Decoration', 187: 'Decoration', 188: 'Decoration', 189: 'Decoration',
+            190: 'Decoration', 191: 'Decoration', 192: 'Decoration', 193: 'Decoration',
+            194: 'Decoration', 195: 'Decoration', 196: 'Decoration', 197: 'Decoration',
+            198: 'Decoration',
+            199: 'Swamp Water',         // avlswtr* – swamp water trail decorations
+            200: 'Decoration', 201: 'Decoration', 202: 'Decoration', 203: 'Decoration',
+            204: 'Decoration', 205: 'Decoration',
+            206: 'Sand Decoration',     // avlxds* – extra sand/desert decorations
+            207: 'Dirt Decoration',     // avlxdt* – extra dirt terrain decorations
+            208: 'Grass Decoration',    // avlxgr* – extra grass terrain decorations
+            209: 'Rough Decoration',    // avlxro* – extra rough terrain decorations
+            210: 'Subterranean Decoration', // avlxsu* – extra subterranean decorations
+            211: 'Swamp Decoration',    // avlxsw* – extra swamp terrain decorations
+            // Extra SoD/HotA objects
+            213: 'Freelancers Guild',
+            221: 'Trading Post (Snow)',
+            // Terrain overlays (222–231)
+            222: 'Clover Field', 223: 'Cursed Ground', 224: 'Evil Fog',
+            225: 'Favorable Winds', 226: 'Fiery Fields', 227: 'Holy Grounds',
+            228: 'Lucid Pools', 229: 'Magic Clouds', 230: 'Magic Plains',
+            231: 'Rocklands',
         };
         return names[cls] || `Object ${cls}`;
     }
