@@ -31,8 +31,11 @@ A pure browser-based file explorer for **Heroes of Might and Magic III** game ar
 | `.PAC` | Packed resource files |
 | `.D32` | Raw 32-bit RGBA images |
 | `.FNT` | Bitmap fonts (256-glyph indexed format) |
+| `.H3M` | Maps |
+| `.H3C` | Campaigns |
 | `.EXE` | GOG installer (Inno Setup, LZMA2 / zlib) |
 | `.ISO` | Original CD image (ISO 9660, InstallShield CABs) |
+| `.SIT` | StuffIt archives of the HoMM3 Mac Version |
 
 ## Usage
 
