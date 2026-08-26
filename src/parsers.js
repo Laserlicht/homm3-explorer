@@ -136,7 +136,9 @@ class LodFile {
         const key = r.readBytes(4);
 
         this.files = [];
-        this.isHota18 = key[0] === 135;
+        // HotA 1.8+ stores a xor key here, original H3 files don't (h3sprite.lod contains leftover junk)
+        const keyValue = ((key[0] | (key[1] << 8) | (key[2] << 16) | (key[3] << 24)) >>> 0);
+        this.isHota18 = keyValue !== 0 && keyValue !== 0x7E0213;
 
         if (this.isHota18) {
             r.seek(80);
