@@ -2606,3 +2606,11 @@ canvas.img-border {
 }
 .h3t-map-title-name { font-size: 15px; font-weight: 700; }
 .h3t-map-title-meta { font-size: 12px; color: var(--text-muted, #8b949e); }
+
+.sav-hero-row { cursor: pointer; }
+.sav-hero-detail td { padding: 8px 12px; line-height: 1.5; font-size: 0.9em; background: var(--bg-secondary); }
+.sav-res-cell span { white-space: nowrap; margin-right: 8px; }
+.sav-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 0.9em; }
+.sav-map-levels { display: flex; flex-wrap: wrap; gap: 16px; }
+.sav-map-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.sav-map-canvas { width: 480px; max-width: 100%; height: auto; aspect-ratio: 1; image-rendering: pixelated; border: 1px solid var(--border); }

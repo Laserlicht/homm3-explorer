@@ -3059,45 +3059,104 @@ self.onmessage = async function(e) {
             const mapNameStr = mh.mapName ? escapeHtml(mh.mapName) : '<em>(unknown)</em>';
             mapInfoHtml = `
                 <div class="map-meta-item"><span class="map-meta-label">Map name</span><span class="map-meta-value">${mapNameStr}</span></div>
-                <div class="map-meta-item"><span class="map-meta-label">Map version</span><span class="map-meta-value">${escapeHtml(mh.h3mVersionName)}</span></div>
-                <div class="map-meta-item"><span class="map-meta-label">Map size</span><span class="map-meta-value">${sizeStr}</span></div>`;
+                ${mh.h3mVersionName ? `<div class="map-meta-item"><span class="map-meta-label">Map version</span><span class="map-meta-value">${escapeHtml(mh.h3mVersionName)}</span></div>` : ''}
+                <div class="map-meta-item"><span class="map-meta-label">Map size</span><span class="map-meta-value">${sizeStr}</span></div>
+                ${mh.maxHeroLevel ? `<div class="map-meta-item"><span class="map-meta-label">Max hero level</span><span class="map-meta-value">${mh.maxHeroLevel}</span></div>` : ''}`;
         }
 
-        // Active-hero table (encoding-aware, rebuilt on encoding change)
-        function buildHeroTable(heroes, encoding) {
-            if (!heroes || heroes.length === 0) return '';
-            const COLOR_ICONS = ['🔴','🔵','🟤','🟢','🟠','🟣','🩵','🩷'];
-            const rows = heroes.map(h => {
-                const colorIcon = h.faction < 8 ? COLOR_ICONS[h.faction] : '⚪';
+        const COLOR_ICONS = ['🔴','🔵','🟤','🟢','🟠','🟣','🩵','🩷'];
+        const RES_ICONS = ['🪵','🧪','⛏️','🌋','💎','💠','🪙'];
+        const colorCell = (i, name) => `${i < 8 ? COLOR_ICONS[i] : '⚪'} ${escapeHtml(name)}`;
+        const listCell = (items) => items && items.length ? items.map(escapeHtml).join(', ') : '—';
+        const section = (title, count, table) => `
+            <div class="map-section">
+                <h3 class="map-section-title">${title}${count != null ? ` (${count})` : ''}</h3>
+                <div class="sav-hero-table-wrap">${table}</div>
+            </div>`;
+
+        function buildPlayerTable(details) {
+            const players = (details.players || []).filter(p => p.active);
+            if (!players.length) return '';
+            const rows = players.map(p => `<tr>
+                <td>${colorCell(p.color, p.colorName)}</td>
+                <td>${escapeHtml(p.faction || '—')}</td>
+                <td class="sav-res-cell">${p.resources.map((r, i) => `<span title="${H3Sav.RESOURCE_NAMES[i]}">${RES_ICONS[i]} ${r.toLocaleString()}</span>`).join(' ')}</td>
+                <td>${listCell(p.heroNames)}</td>
+                <td>${listCell(p.townNames)}</td>
+            </tr>`).join('');
+            return section('Players', players.length, `<table class="sav-hero-table">
+                <thead><tr><th>Player</th><th>Starting faction</th><th>Resources</th><th>Heroes</th><th>Towns</th></tr></thead>
+                <tbody>${rows}</tbody></table>`);
+        }
+
+        function buildTownTable(details) {
+            const towns = details.towns || [];
+            if (!towns.length) return '';
+            const rows = towns.map(t => `<tr>
+                <td>${escapeHtml(t.name)}</td>
+                <td>${escapeHtml(t.typeName)}</td>
+                <td>${colorCell(t.owner, t.ownerName)}</td>
+                <td>${t.x}, ${t.y}${t.z ? ' (underground)' : ''}</td>
+            </tr>`).join('');
+            return section('Towns', towns.length, `<table class="sav-hero-table">
+                <thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Position</th></tr></thead>
+                <tbody>${rows}</tbody></table>`);
+        }
+
+        // Hero table (rows expand on click; rebuilt on encoding change)
+        function buildHeroTable(heroes, showAll) {
+            const list = (heroes || []).filter(h => showAll || h.owner < 8);
+            if (!list.length) return '';
+            const rows = list.map(h => {
                 const armyStr = h.army.map(a => `${a.count}×${a.name}`).join(', ') || '—';
                 const skillStr = h.skills.map(sk => `${sk.level} ${sk.name}`).join(', ') || '—';
-                return `<tr>
-                    <td>${colorIcon} ${escapeHtml(h.factionName)}</td>
+                const art = (a) => a.spell ? `${a.name} (${a.spell})` : a.name;
+                const artHtml = h.artifacts
+                    ? (h.artifacts.length ? h.artifacts.map(a => `<b>${escapeHtml(a.slot)}:</b> ${escapeHtml(art(a))}`).join('<br>') : '—')
+                    : '<em>(unavailable)</em>';
+                const packHtml = h.backpack ? listCell(h.backpack.map(art)) : '<em>(unavailable)</em>';
+                const pos = h.x !== undefined && h.owner < 8 ? `${h.x}, ${h.y}${h.z ? ' (UG)' : ''}` : '—';
+                return `<tr class="sav-hero-row" title="Click for details">
+                    <td>${colorCell(h.owner, h.factionName)}</td>
                     <td>${escapeHtml(h.name)}</td>
                     <td>${h.level}</td>
                     <td>${h.attack}/${h.defense}/${h.power}/${h.knowledge}</td>
                     <td>${h.exp.toLocaleString()}</td>
+                    <td>${h.mana} / ${h.movLeft}/${h.movTotal}</td>
+                    <td>${pos}</td>
                     <td class="sav-army-cell" title="${escapeHtml(armyStr)}">${escapeHtml(armyStr.length > 40 ? armyStr.slice(0,40)+'…' : armyStr)}</td>
                     <td class="sav-skill-cell" title="${escapeHtml(skillStr)}">${escapeHtml(skillStr.length > 40 ? skillStr.slice(0,40)+'…' : skillStr)}</td>
-                </tr>`;
+                </tr>
+                <tr class="sav-hero-detail" hidden><td colspan="9">
+                    <div><b>Army:</b> ${escapeHtml(armyStr)}</div>
+                    <div><b>Skills:</b> ${escapeHtml(skillStr)}</div>
+                    <div><b>Spellbook (${h.spells.length}):</b> ${listCell(h.spells)}</div>
+                    <div><b>Equipped:</b><br>${artHtml}</div>
+                    <div><b>Backpack:</b> ${packHtml}</div>
+                </td></tr>`;
             }).join('');
-            return `
-                <div class="map-section">
-                    <h3 class="map-section-title">Active Heroes (${heroes.length})</h3>
-                    <div class="sav-hero-table-wrap">
-                        <table class="sav-hero-table">
-                            <thead><tr>
-                                <th>Player</th><th>Name</th><th>Lv</th>
-                                <th>A/D/P/K</th><th>Exp</th><th>Army</th><th>Skills</th>
-                            </tr></thead>
-                            <tbody>${rows}</tbody>
-                        </table>
-                    </div>
-                </div>`;
+            return section(showAll ? 'All Heroes' : 'Active Heroes', list.length, `<table class="sav-hero-table">
+                <thead><tr>
+                    <th>Player</th><th>Name</th><th>Lv</th><th>A/D/P/K</th><th>Exp</th>
+                    <th>Mana / Move</th><th>Position</th><th>Army</th><th>Skills</th>
+                </tr></thead><tbody>${rows}</tbody></table>`);
         }
 
         let currentEncoding = state.savEncoding || 'windows-1252';
-        let activeHeroes = save.activeHeroes || [];
+        let details = save.details || { heroes: save.heroes, players: null, towns: null, setup: null };
+        let showAllHeroes = false;
+
+        function buildDetails() {
+            return buildPlayerTable(details) + buildTownTable(details) + buildHeroTable(details.heroes, showAllHeroes);
+        }
+
+        const setupLines = [];
+        if (details.setup) {
+            setupLines.push(['Difficulty', details.setup.difficultyName]);
+            if (details.setup.filename) setupLines.push(['Setup map file', details.setup.filename]);
+        }
+        const setupHtml = setupLines.map(([k, v]) =>
+            `<div class="map-meta-item"><span class="map-meta-label">${k}</span><span class="map-meta-value">${escapeHtml(String(v))}</span></div>`).join('');
 
         container.innerHTML = `
             <div class="preview-wrapper">
@@ -3110,6 +3169,8 @@ self.onmessage = async function(e) {
                     <button class="preview-toolbar-toggle" title="More options">&#9776;</button>
                     <div class="preview-toolbar">
                         ${buildEncodingSelectHtml('windows-1252', currentEncoding, 'sav-encoding-select')}
+                        ${save.embeddedMap ? `<button title="Show the map stored inside this savegame" id="sav-map-btn">🗺 Map</button>` : ''}
+                        <label class="sav-toggle"><input type="checkbox" id="sav-all-heroes"> All heroes</label>
                         ${rawData ? `<button title="Show file hashes" id="sav-hash-btn"># Hash</button>` : ''}
                         ${rawData ? `<button title="Export original savegame" id="sav-export-btn">💾 Export</button>` : ''}
                     </div>
@@ -3127,11 +3188,12 @@ self.onmessage = async function(e) {
                             <div class="map-meta-item"><span class="map-meta-label">Game version</span><span class="map-meta-value">${escapeHtml(save.versionName)} (${save.versionMajor}.${save.versionMinor})</span></div>
                             ${mapFileLine}
                             ${mapInfoHtml}
+                            ${setupHtml}
                             <div class="map-meta-item"><span class="map-meta-label">Compressed size</span><span class="map-meta-value">${formatSize(save.compressedSize)}</span></div>
                             <div class="map-meta-item"><span class="map-meta-label">Decompressed size</span><span class="map-meta-value">${formatSize(save.decompressedSize)}</span></div>
                         </div>
                         ${descLine}
-                        <div id="sav-hero-section">${buildHeroTable(activeHeroes, currentEncoding)}</div>
+                        <div id="sav-hero-section">${buildDetails()}</div>
                     </div>
                 </div>
             </div>
@@ -3139,22 +3201,94 @@ self.onmessage = async function(e) {
 
         container.querySelector('.preview-toolbar-toggle')?.addEventListener('click', () =>
             container.querySelector('.preview-header').classList.toggle('toolbar-expanded'));
+        container.querySelector('#sav-hero-section').addEventListener('click', (e) => {
+            const row = e.target.closest('.sav-hero-row');
+            if (row) row.nextElementSibling.hidden = !row.nextElementSibling.hidden;
+        });
         const hashBtn = container.querySelector('#sav-hash-btn');
         if (hashBtn && rawData) hashBtn.addEventListener('click', () => showHashModal(filename, typeLabel, rawData));
         const exportBtn = container.querySelector('#sav-export-btn');
         if (exportBtn && rawData) exportBtn.addEventListener('click', () => exportBlob(new Blob([rawData]), filename));
 
-        // Encoding selector: re-extract heroes with new encoding
+        // Encoding selector / all-heroes toggle: re-parse and re-render the detail sections
+        const rerender = () => { container.querySelector('#sav-hero-section').innerHTML = buildDetails(); };
         const encSelect = container.querySelector('#sav-encoding-select');
         if (encSelect && save._decompressed) {
             encSelect.addEventListener('change', (e) => {
                 currentEncoding = e.target.value;
                 state.savEncoding = currentEncoding;
-                const newHeroes = H3Sav.filterActiveHeroes(H3Sav.extractHeroes(save._decompressed, currentEncoding));
-                container.querySelector('#sav-hero-section').innerHTML = buildHeroTable(newHeroes, currentEncoding);
+                details = H3Sav.parseDetails(save._decompressed, currentEncoding);
+                rerender();
             });
         }
+        container.querySelector('#sav-map-btn')?.addEventListener('click', () =>
+            showSavegameMapModal(save, () => details, filename));
+        container.querySelector('#sav-all-heroes')?.addEventListener('change', (e) => {
+            showAllHeroes = e.target.checked;
+            rerender();
+        });
+    }
 
+    // Map stored inside a savegame: terrain minimap per level (owned towns / heroes
+    // highlighted in player colours) plus a summary of the objects on the map.
+    function showSavegameMapModal(save, getDetails, filename) {
+        const em = save.embeddedMap;
+        if (!em) return;
+        const details = getDetails();
+        const size = em.mapSize;
+
+        const owned = [];
+        for (const t of details.towns || []) if (t.owner < 8) owned.push({ objClass: 98, owner: t.owner, x: t.x, y: t.y, z: t.z });
+        for (const h of details.heroes || []) if (h.owner < 8 && h.x !== undefined) owned.push({ objClass: 34, owner: h.owner, x: h.x, y: h.y, z: h.z });
+
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.display = 'flex';
+        const classCounts = new Map();
+        for (const o of em.objects || []) classCounts.set(o.cls, (classCounts.get(o.cls) || 0) + 1);
+        const rows = [...classCounts.entries()]
+            .map(([cls, n]) => [H3Map.getObjectClassName(cls) || `Object class ${cls}`, n])
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, n]) => `<tr><td>${escapeHtml(name)}</td><td>${n}</td></tr>`).join('');
+        const levelNames = ['Surface', 'Underground'];
+        overlay.innerHTML = `
+            <div class="modal-box" style="max-width:1100px; width:95%; overflow:auto;">
+                <button class="modal-close" title="Close">&times;</button>
+                <h2 style="font-size:16px; margin-bottom:4px; color:var(--text-primary);">🗺 ${escapeHtml(save.mapHeader?.mapName || 'Embedded map')}</h2>
+                <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+                    ${escapeHtml(filename)} &mdash; ${size}×${size}, ${em.levels} level${em.levels > 1 ? 's' : ''}
+                    ${em.objects ? `, ${em.objects.length.toLocaleString()} objects` : ''}.
+                    Reconstructed from the savegame state (current owners shown); it is not a standalone .h3m.</p>
+                <div class="sav-map-levels">
+                    ${Array.from({ length: em.levels }, (_, z) => `
+                        <div><div class="sav-map-label">${levelNames[z]}</div><canvas class="sav-map-canvas" data-level="${z}" width="${size}" height="${size}"></canvas></div>`).join('')}
+                </div>
+                ${rows ? `<div class="sav-hero-table-wrap" style="margin-top:14px;"><table class="sav-hero-table">
+                    <thead><tr><th>Object type</th><th>Count</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+            </div>`;
+        document.body.appendChild(overlay);
+        const close = () => overlay.remove();
+        overlay.querySelector('.modal-close').addEventListener('click', close);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+        const allTerrain = [];
+        for (let z = 0; z < em.levels; z++) {
+            const level = [];
+            for (let y = 0; y < size; y++) {
+                const row = [];
+                for (let x = 0; x < size; x++) {
+                    const i = y * size + x;
+                    row.push({ terrain: em.terrain[z][i], flags: em.blocked[z][i] ? 1 : 0, road: em.roads[z][i] });
+                }
+                level.push(row);
+            }
+            allTerrain.push(level);
+        }
+        for (let z = 0; z < em.levels; z++) {
+            const canvas = H3Map.renderMinimap({ mapSize: size, terrain: allTerrain, objects: owned }, z, 512);
+            const target = overlay.querySelector(`.sav-map-canvas[data-level="${z}"]`);
+            if (canvas && target) target.getContext('2d').drawImage(canvas, 0, 0);
+        }
     }
 
     function showH3MPreview(container, map, filename, rawData) {
